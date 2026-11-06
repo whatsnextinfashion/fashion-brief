@@ -129,7 +129,7 @@ def collect(days)
 end
 
 # ─── AI triage ───
-PROMPT_V = 3 # bump when the triage rules change, so cached articles are re-triaged
+PROMPT_V = 4 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
@@ -151,12 +151,18 @@ PROMPT = <<~P
 
   Categories: %CATS%
 
-  Score (importance for a fashion CEO): 5 = must know today (major group results, big M&A, top creative/CEO change);
-  4 = important (results of a notable brand, strategic move, key market signal); 3 = useful context;
-  1-2 = minor (it will not be shown).
+  PRIORITY #1 = LUXURY (LVMH and its maisons, Kering, Hermès, Chanel, Richemont, Prada, Moncler, Armani, Burberry,
+  Capri, Tapestry, Valentino, Zegna, Brunello Cucinelli, luxury watches & jewellery, luxury department stores, luxury
+  in China/Asia/Middle East...). Everything else (premium, mass market, sportswear, retail, macro) is important but
+  secondary: rate it one notch lower than an equivalent luxury story.
+
+  Score (importance for a luxury-focused fashion CEO): 5 = must know today (major luxury group results, big luxury M&A,
+  top creative/CEO change at a luxury house); 4 = important (luxury brand move, or a major non-luxury event);
+  3 = useful context; 1-2 = minor (it will not be shown).
 
   Reply ONLY with JSON: a list of objects {"id": ..., "keep": true/false, "cat": "<category>",
-  "score": 1-5, "title_en": "<headline in natural English; translate if it is in French>",
+  "score": 1-5, "luxury": true/false (is it about the luxury sector?),
+  "title_en": "<headline in natural English; translate if it is in French>",
   "angle": "<in English, 1 sentence, max 20 words: why it matters for the business / merchandising>"}.
   For keep=false, just return {"id": ..., "keep": false}.
 
@@ -308,7 +314,9 @@ def dedupe(arts, cache, models, key)
 end
 
 # ─── HTML page ───
-MIN_SCORE = 3 # only articles rated 3+ by the AI are shown (1-2 = minor)
+MIN_SCORE = 3     # only articles rated 3+ by the AI are shown (1-2 = minor)
+MAX_ARTICLES = 50 # the page shows at most the 50 most important articles
+LUXURY = /\b(luxury|luxe|LVMH|Louis Vuitton|Dior|Kering|Gucci|Balenciaga|Saint Laurent|Herm[eè]s|Chanel|Richemont|Cartier|Prada|Miu Miu|Moncler|Armani|Burberry|Valentino|Zegna|Cucinelli|Loro Piana|Bottega|Fendi|Celine|Loewe|Tiffany|Bulgari|Rolex)\b/i
 
 def build(days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
@@ -320,8 +328,12 @@ def build(days)
     title = c["title_en"].to_s.strip.empty? ? a["title"] : c["title_en"]
     a.merge("title" => title, "original" => (title == a["title"] ? "" : a["title"]),
             "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
-            "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s)
+            "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s,
+            "luxury" => c["luxury"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ LUXURY)))
   end.compact
+  # Keep the MAX_ARTICLES best: highest score first, luxury first on equal score, then the most recent.
+  kept = kept.sort_by { |a| [-a["score"], a["luxury"] ? 0 : 1, -Time.parse(a["date"]).to_i] }.first(MAX_ARTICLES)
+  kept.sort_by! { |a| a["date"] }.reverse!
   html = DATA.read.sub("__DATA__") { JSON.generate(kept).gsub("</", "<\\/") }
              .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", days.to_s)
              .sub("__CATS__") { JSON.generate(CATEGORIES) }
@@ -370,6 +382,7 @@ input{flex:1;min-width:180px}
 .meta{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .src{font-weight:600;color:var(--ink)}
 .tag{background:var(--hi);color:var(--accent);padding:1px 8px;border-radius:20px;font-size:11px}
+.lux{background:var(--accent);color:var(--panel);padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}
 .t{font-weight:600;font-size:16px;margin:3px 0}
 .a{color:var(--muted);font-size:13.5px}
 .dots{color:var(--accent);letter-spacing:1px}
@@ -385,7 +398,7 @@ input{flex:1;min-width:180px}
 <div class="bar"><button class="f menu" onclick="side.classList.toggle('open')">☰ Filters</button>
 <input id="q" placeholder="Search (brand, country, group…)">
 <select id="sort"><option value="date">Latest</option><option value="score">Most important</option></select>
-<select id="imp"><option value="1">All</option><option value="3">Important (★3+)</option><option value="4">Must-read (★4+)</option></select></div>
+<select id="imp"><option value="1">All (top 50)</option><option value="lux">Luxury only</option><option value="4">Must-read (★4+)</option></select></div>
 <div id="list"></div></main></div>
 <script>
 const A=__DATA__, CATS=__CATS__, GEN=new Date("__GEN__"); let fc=null, fs=null;
@@ -398,15 +411,15 @@ function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.c
 function draw(){
  btns('cats',CATS.filter(c=>A.some(a=>a.cat===c)),fc,v=>fc=v);
  btns('srcs',[...new Set(A.map(a=>a.source))].sort(),fs,v=>fs=v);
- const q=$('#q').value.toLowerCase(), min=+$('#imp').value;
- let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
+ const q=$("#q").value.toLowerCase(), imp=$("#imp").value, min=imp==="lux"?1:+imp;
+ let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(imp!=="lux"||a.luxury)&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
  if($('#sort').value==='score')L.sort((x,y)=>y.score-x.score||y.date.localeCompare(x.date));
  let h='',last='';
  for(const a of L){const d=new Date(a.date), day=d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'});
   if($('#sort').value==='date'&&day!==last){h+=`<div class="day">${day}</div>`;last=day}
   h+=`<a class="it ${read[a.id]?'read':''}" href="${esc(a.link)}" target="_blank" rel="noopener" data-id="${a.id}"${a.original?` title="Original: ${esc(a.original)}"`:''}>
   <div class="meta"><span class="src">${esc(a.source)}</span><span>${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>
-  <span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
+  ${a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
   <div class="t">${esc(a.title)}</div>${a.angle?`<div class="a">→ ${esc(a.angle)}</div>`:''}</a>`}
  $('#list').innerHTML=h||'<div class="empty">No articles match these filters.</div>';
  document.querySelectorAll('.it').forEach(e=>e.onclick=()=>{read[e.dataset.id]=1;e.classList.add('read');
