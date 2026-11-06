@@ -1,0 +1,41 @@
+# Runs every morning on GitHub's servers (your computer can be off)
+# and publishes the page with GitHub Pages.
+#
+# Security: there is NO API key in this project. The free AI (GitHub Models) uses
+# GITHUB_TOKEN, a temporary token GitHub creates for each run and destroys at the end.
+# It is never written in the files and only allows what is listed under "permissions".
+name: Daily fashion brief
+
+on:
+  schedule:
+    - cron: "0 5 * * *"   # 05:00 UTC = 6am Paris (winter) / 7am (summer)
+  workflow_dispatch:       # "Run workflow" button (only you, the owner, can press it)
+
+permissions:
+  contents: write          # save the new page in this repository only
+  models: read             # free AI (GitHub Models)
+
+concurrency:
+  group: daily-brief
+  cancel-in-progress: false
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Fetch, triage with AI, build the page
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ruby veille_mode.rb --no-open
+      - name: Save the new page
+        run: |
+          git config user.name "fashion-brief-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A docs veille_*.json
+          git commit -m "Daily brief $(date -u +%F)" || echo "No changes"
+          git push
