@@ -5,7 +5,7 @@ Every morning GitHub fetches 13 media, an AI keeps only the fashion business new
 (earnings, collabs, store openings, M&A, appointments, China, macro), translates the
 headlines into English and publishes the page.
 
-**Cost: €0** — GitHub Actions + GitHub Pages (public repository) + GitHub Models (free AI).
+**Cost: €0** — GitHub Actions + GitHub Pages (public repository) + Google Gemini (free AI tier).
 Your computer can be off.
 
 ## Mise en ligne (une seule fois, ~10 min)
@@ -25,10 +25,11 @@ Ensuite elle se met à jour toute seule chaque matin (~6 h / 7 h, heure de Paris
 Pour forcer une mise à jour : **Actions → Daily fashion brief → Run workflow**.
 
 ## Sécurité
-- **Aucune clé API** dans ce projet, donc rien à voler. L'IA gratuite utilise un jeton temporaire que GitHub
-  crée pour chaque lancement et détruit à la fin.
-- **Aucun moyen de paiement** à enregistrer sur GitHub : sans carte, impossible d'être facturée.
-  Si la limite gratuite d'IA est atteinte, GitHub refuse simplement la demande (le tri par mots-clés prend le relais).
+- La **clé Gemini** est rangée dans les *Secrets* de GitHub (Settings → Secrets and variables → Actions) :
+  chiffrée, jamais dans les fichiers, masquée dans les journaux. Personne ne peut la relire, même avec le dépôt public.
+- **Aucune carte bancaire** chez Google ni chez GitHub : impossible d’être facturée. Si la limite gratuite est
+  atteinte, Google refuse simplement la demande (le tri par mots-clés prend le relais).
+- Si tu crois que la clé a fuité : supprime-la sur https://aistudio.google.com/apikey et crées-en une nouvelle.
 - Dépôt public = tout le monde peut *lire*, mais **seule toi peux modifier** ou lancer le brief.
 - Ne colle jamais de mot de passe ou de clé dans un fichier de ce dépôt.
 - Active la **double authentification** : GitHub → photo de profil → Settings → Password and authentication

@@ -5,13 +5,13 @@
 # Runs with the Ruby that ships with macOS and with GitHub Actions (nothing to install).
 #
 #  1. Fetches the feeds of the media list below.
-#  2. AI triage (Claude): keeps only fashion business news (collabs, P&L, store openings,
+#  2. AI triage (Google Gemini, free): keeps only fashion business news (collabs, P&L, store openings,
 #     M&A, appointments, China, macro hitting brand margins) with a merchandising /
 #     VP-CEO angle, and translates every headline into English.
 #  3. Writes docs/index.html (headlines + direct link to the media) — served by GitHub Pages.
 #
-#  On GitHub:  runs every morning by itself, free AI via GitHub Models (see README.md).
-#  On a Mac:   ruby veille_mode.rb   (no AI token here: keyword triage, no translation)
+#  On GitHub:  runs every morning by itself, free AI via Google Gemini (see README.md).
+#  On a Mac:   ruby veille_mode.rb   (without GEMINI_API_KEY: keyword triage, no translation)
 #  Options:    --days 3   --no-open
 Encoding.default_external = Encoding::UTF_8
 require "net/http"; require "uri"; require "json"; require "rexml/document"
@@ -21,7 +21,6 @@ HERE  = File.expand_path(File.dirname(__FILE__))
 CACHE = File.join(HERE, "veille_cache.json")
 ARTS  = File.join(HERE, "veille_articles.json")
 OUT   = File.join(HERE, "docs", "index.html")
-MODEL = ENV["VEILLE_MODEL"] || "claude-haiku-5-5"
 UA = "Mozilla/5.0 (Macintosh) FashionBrief/1.0"
 
 def gnews(q, lang = "en")
@@ -40,7 +39,7 @@ SOURCES = [
   ["FashionNetwork",  gnews("site:fashionnetwork.com when:3d")],
   ["Jing Daily",      gnews("site:jingdaily.com when:7d")],
   ["Journal du Luxe", gnews("site:journalduluxe.fr when:7d", "fr")],
-  ["Drapers",         "https://www.drapersonline.com/rss"],
+  ["Drapers",         gnews("site:drapersonline.com when:7d")],
   ["FashionUnited",   "https://fashionunited.com/rss-news"],
   ["The Good Goods",  "https://thegoodgoods.fr/feed/"],
   ["The Bold Way",    gnews("site:theboldway.fr", "fr")],
@@ -156,48 +155,56 @@ def line(a)
   "id=#{a['id']} | #{a['source']} | #{a['title']}#{a['summary'].empty? ? '' : ' | ' + a['summary'][0, 160]}"
 end
 
-# Two AI providers:
-#  - FREE: GitHub Models, used automatically inside GitHub Actions (GITHUB_TOKEN, no key, no card).
-#  - Paid (optional, a bit sharper): Anthropic Claude, if ANTHROPIC_API_KEY is set.
-GH_MODELS = (ENV["VEILLE_GH_MODEL"] || "openai/gpt-4.1-mini,openai/gpt-4o-mini").split(",")
+# ─── AI: Google Gemini, free tier ───
+# The key is read from the GEMINI_API_KEY environment variable (a GitHub "secret").
+# It is sent in a request header only — never in a URL, a file or the logs.
+# Free tier without a billing account on Google = it can never cost money.
+GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
-def provider
-  return [:claude, ENV["ANTHROPIC_API_KEY"]] unless ENV["ANTHROPIC_API_KEY"].to_s.empty?
-  return [:github, ENV["GITHUB_TOKEN"]] unless ENV["GITHUB_TOKEN"].to_s.empty?
-  nil
+def gemini_request(path, key, body = nil)
+  uri = URI(GEMINI + path)
+  Net::HTTP.start(uri.host, 443, use_ssl: true, open_timeout: 15, read_timeout: 180) do |h|
+    headers = { "x-goog-api-key" => key, "content-type" => "application/json" }
+    body ? h.post(uri.path, JSON.generate(body), headers) : h.get(uri.path + "?pageSize=200", headers)
+  end
 end
 
-def ask_ai(batch, kind, key)
+# Picks the best available "flash" model automatically (model names change over time).
+def gemini_models(key)
+  forced = ENV["VEILLE_GEMINI_MODEL"].to_s
+  return [forced] unless forced.empty?
+  res = gemini_request("/models", key)
+  raise "Gemini key refused (HTTP #{res.code}) - check the GEMINI_API_KEY secret" unless res.code == "200"
+  names = JSON.parse(res.body)["models"].to_a
+               .select { |m| m["supportedGenerationMethods"].to_a.include?("generateContent") }
+               .map { |m| m["name"].sub("models/", "") }
+               .select { |n| n =~ /flash/ && n !~ /image|tts|audio|live|thinking|exp|embedding|8b/ }
+  version = lambda { |n| n[/(\d+(?:\.\d+)?)/, 1].to_f }
+  # newest first; stable before preview; full "flash" before "flash-lite"
+  names.sort_by { |n| [-version.call(n), n.include?("preview") ? 1 : 0, n.include?("lite") ? 1 : 0, n.size] }
+end
+
+def ask_ai(batch, models, key)
   prompt = PROMPT.sub("%CATS%", CATEGORIES.join(", ")) + batch.map { |a| "- " + line(a) }.join("\n")
-  models = kind == :claude ? [MODEL] : GH_MODELS.dup
+  body = { contents: [{ role: "user", parts: [{ text: prompt }] }],
+           generationConfig: { temperature: 0, responseMimeType: "application/json" } }
   attempt = 0
   while (model = models.first) && attempt < 4
     attempt += 1
     begin
-      if kind == :claude
-        uri = URI("https://api.anthropic.com/v1/messages")
-        body = { model: model, max_tokens: 8000, messages: [{ role: "user", content: prompt }] }
-        headers = { "x-api-key" => key, "anthropic-version" => "2023-06-01" }
-      else
-        uri = URI("https://models.github.ai/inference/chat/completions")
-        body = { model: model, max_tokens: 4000, temperature: 0, messages: [{ role: "user", content: prompt }] }
-        headers = { "Authorization" => "Bearer #{key}" }
-      end
-      res = Net::HTTP.start(uri.host, 443, use_ssl: true, read_timeout: 180) do |h|
-        h.post(uri.path, JSON.generate(body), headers.merge("content-type" => "application/json"))
-      end
-      if kind == :github && %w[400 404].include?(res.code) && res.body =~ /model/i
-        warn "  ! model #{model} unavailable, trying the next one"
+      res = gemini_request("/models/#{model}:generateContent", key, body)
+      if %w[400 404].include?(res.code) && models.size > 1
+        warn "  ! model #{model} unavailable (HTTP #{res.code}), trying #{models[1]}"
         models.shift
         next
       end
       raise "HTTP #{res.code} #{res.body[0, 200]}" unless res.code == "200"
-      j = JSON.parse(res.body)
-      text = kind == :claude ? j["content"].map { |b| b["text"].to_s }.join : j["choices"][0]["message"]["content"].to_s
+      parts = JSON.parse(res.body).dig("candidates", 0, "content", "parts").to_a
+      text = parts.map { |p| p["text"].to_s }.join
       return JSON.parse(text[text.index("[")..text.rindex("]")])
     rescue StandardError => e
       warn "  ! AI (attempt #{attempt}): #{e.message[0, 160]}"
-      sleep(e.message.include?("429") ? 65 : 5 * attempt)
+      sleep(e.message.include?("HTTP 429") ? 60 : 5 * attempt)
     end
   end
   nil
@@ -216,16 +223,32 @@ end
 
 def classify(arts, cache)
   todo = arts.reject { |a| cache.key?(a["id"]) }
-  kind, key = provider
-  unless kind
-    puts "No AI available (GITHUB_TOKEN / ANTHROPIC_API_KEY): keyword triage only (less accurate, no translation)."
+  key = ENV["GEMINI_API_KEY"].to_s
+  if key.empty?
+    puts "No GEMINI_API_KEY: keyword triage only (less accurate, no translation)."
     return
   end
-  puts "AI triage of #{todo.size} new articles (#{kind == :claude ? MODEL : 'GitHub Models, free'})..."
-  # Free tier: small batches, one request at a time (limits: ~15 requests/min, ~150/day).
-  todo.each_slice(kind == :claude ? 40 : 20).each_with_index do |b, i|
-    sleep 5 if i > 0 && kind == :github
-    (ask_ai(b, kind, key) || []).each { |r| cache[r["id"].to_s] = r.merge("by" => "ai") if r.is_a?(Hash) && r["id"] }
+  begin
+    models = gemini_models(key)
+  rescue StandardError => e
+    warn "  ! #{e.message}"
+    return
+  end
+  if models.empty?
+    warn "  ! No Gemini 'flash' model available: keyword triage only."
+    return
+  end
+  puts "AI triage of #{todo.size} new articles (Gemini #{models.first}, free tier)..."
+  failures = 0
+  todo.each_slice(25).each_with_index do |b, i|
+    sleep 6 if i > 0 # free tier: stay well under the requests-per-minute limit
+    res = ask_ai(b, models, key)
+    if res.nil?
+      failures += 1
+      break if failures >= 2 # AI down or daily quota reached: stop, keywords take over
+      next
+    end
+    res.each { |r| cache[r["id"].to_s] = r.merge("by" => "ai") if r.is_a?(Hash) && r["id"] }
   end
   live = arts.map { |a| a["id"] }
   File.write(CACHE, JSON.generate(cache.select { |k, _| live.include?(k) })) # keep the cache small
