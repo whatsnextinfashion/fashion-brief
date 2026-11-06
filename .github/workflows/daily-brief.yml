@@ -1,9 +1,8 @@
 # Runs every morning on GitHub's servers (your computer can be off)
 # and publishes the page with GitHub Pages.
 #
-# Security: there is NO API key in this project. The free AI (GitHub Models) uses
-# GITHUB_TOKEN, a temporary token GitHub creates for each run and destroys at the end.
-# It is never written in the files and only allows what is listed under "permissions".
+# Security: the Gemini key lives only in GitHub "Secrets" (encrypted, never in the files,
+# hidden in the logs). The run may only write to this repository.
 name: Daily fashion brief
 
 on:
@@ -13,7 +12,6 @@ on:
 
 permissions:
   contents: write          # save the new page in this repository only
-  models: read             # free AI (GitHub Models)
 
 concurrency:
   group: daily-brief
@@ -30,7 +28,7 @@ jobs:
           ruby-version: "3.3"
       - name: Fetch, triage with AI, build the page
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # free Google AI key, stored in Settings > Secrets
         run: ruby veille_mode.rb --no-open
       - name: Save the new page
         run: |
