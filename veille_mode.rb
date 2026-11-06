@@ -129,6 +129,7 @@ def collect(days)
 end
 
 # ─── AI triage ───
+PROMPT_V = 3 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
@@ -137,15 +138,25 @@ PROMPT = <<~P
   store openings/closures, flagships, new markets; M&A, fundraising, disposals; executive and creative-director
   appointments; product / pricing / assortment / distribution strategy; China & Asia; macro, tariffs, geopolitics
   or consumer trends THAT AFFECT fashion brands' margins.
-  REJECT: celebrities, red carpets, runway trends with no business angle, shopping tips, pure beauty with no business
-  angle, general news unrelated to fashion/retail.
+  REJECT: celebrities, red carpets, runway reviews, campaigns and ad films, product drops with no business angle,
+  shopping tips, events/awards/galas, obituaries, trade-show previews, job ads, opinion pieces without news,
+  small local brands with no wider lesson, pure beauty/food/hotels/tech/finance with no fashion-retail impact.
+  ALWAYS REJECT style & consumer-magazine content: "best skirt/coat/bag of the season", colour or silhouette trends,
+  what to wear, how to style, editors' picks, wish lists, gift guides, street style, celebrity looks, beauty looks,
+  trend forecasts about clothes themselves. The brief is 100% BUSINESS (money, strategy, deals, people, markets).
+  BE STRICT: this brief is read in 10 minutes by a busy CEO. Typically only 15-25% of the articles deserve to be kept.
+  When in doubt, reject.
   DUPLICATES: if several articles (even in different languages) cover the same story, keep ONE (the most complete)
   and set keep=false for the others.
 
   Categories: %CATS%
 
+  Score (importance for a fashion CEO): 5 = must know today (major group results, big M&A, top creative/CEO change);
+  4 = important (results of a notable brand, strategic move, key market signal); 3 = useful context;
+  1-2 = minor (it will not be shown).
+
   Reply ONLY with JSON: a list of objects {"id": ..., "keep": true/false, "cat": "<category>",
-  "score": 1-5 (importance for a CEO), "title_en": "<headline in natural English; translate if it is in French>",
+  "score": 1-5, "title_en": "<headline in natural English; translate if it is in French>",
   "angle": "<in English, 1 sentence, max 20 words: why it matters for the business / merchandising>"}.
   For keep=false, just return {"id": ..., "keep": false}.
 
@@ -216,7 +227,8 @@ end
 def keyword_classify(a)
   text = "#{a['title']} #{a['summary']}"
   cats = KEYWORDS.select { |_, rx| text =~ rx }.keys
-  return { "keep" => false } if cats.empty? || !(TRADE.include?(a["source"]) || text =~ FASHION)
+  # without AI: stricter keyword rule (at least 2 business signals)
+  return { "keep" => false } if cats.size < 2 || !(TRADE.include?(a["source"]) || text =~ FASHION)
   { "keep" => true, "cat" => cats.first, "score" => [5, 2 + cats.size].min, "angle" => "" }
 end
 
@@ -225,7 +237,7 @@ def load_cache
 end
 
 def classify(arts, cache)
-  todo = arts.reject { |a| cache.key?(a["id"]) }
+  todo = arts.reject { |a| cache[a["id"]] && cache[a["id"]]["v"] == PROMPT_V } # re-triage when the rules change
   key = ENV["GEMINI_API_KEY"].to_s
   if key.empty?
     puts "No GEMINI_API_KEY: keyword triage only (less accurate, no translation)."
@@ -251,19 +263,60 @@ def classify(arts, cache)
       break if failures >= 2 # AI down or daily quota reached: stop, keywords take over
       next
     end
-    res.each { |r| cache[r["id"].to_s] = r.merge("by" => "ai") if r.is_a?(Hash) && r["id"] }
+    res.each { |r| cache[r["id"].to_s] = r.merge("by" => "ai", "v" => PROMPT_V) if r.is_a?(Hash) && r["id"] }
   end
+  dedupe(arts, cache, models, key)
   live = arts.map { |a| a["id"] }
   File.write(CACHE, JSON.generate(cache.select { |k, _| live.include?(k) })) # keep the cache small
 end
 
+# Second AI pass: the same story is often covered by several media (and was triaged in different
+# batches), so we ask Gemini to group the kept headlines by story and keep only the best one.
+def dedupe(arts, cache, models, key)
+  kept = arts.select { |a| (c = cache[a["id"]]) && c["keep"] && c["score"].to_i >= MIN_SCORE }
+  return if kept.size < 2
+  list = kept.map { |a| "id=#{a['id']} | #{a['source']} | #{cache[a['id']]['title_en'] || a['title']}" }.join("\n")
+  prompt = "Here are news headlines. Several may cover THE SAME STORY (same company + same event), even if worded " \
+           "differently or from different media. Return ONLY JSON: a list of groups, each group a list of ids " \
+           "covering the same story. Only include groups with 2 or more ids.\n\n#{list}"
+  body = { contents: [{ role: "user", parts: [{ text: prompt }] }],
+           generationConfig: { temperature: 0, responseMimeType: "application/json" } }
+  groups = nil
+  4.times do
+    model = models.first
+    begin
+      res = gemini_request("/models/#{model}:generateContent", key, body)
+      raise "HTTP #{res.code}" unless res.code == "200"
+      text = JSON.parse(res.body).dig("candidates", 0, "content", "parts").to_a.map { |p| p["text"].to_s }.join
+      groups = JSON.parse(text[text.index("[")..text.rindex("]")])
+      break
+    rescue StandardError => e
+      warn "  ! dedupe with #{model}: #{e.message[0, 80]}"
+      models.push(models.shift) if models.size > 1
+      sleep 3
+    end
+  end
+  return unless groups.is_a?(Array)
+  removed = 0
+  groups.each do |g|
+    ids = Array(g).map(&:to_s).select { |id| cache[id] && cache[id]["keep"] }
+    next if ids.size < 2
+    best = ids.max_by { |id| [cache[id]["score"].to_i, cache[id]["angle"].to_s.size] }
+    (ids - [best]).each { |id| cache[id] = cache[id].merge("keep" => false, "dup_of" => best); removed += 1 }
+  end
+  puts "Removed #{removed} duplicate stories."
+end
+
 # ─── HTML page ───
+MIN_SCORE = 3 # only articles rated 3+ by the AI are shown (1-2 = minor)
+
 def build(days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
   cache = load_cache
   kept = arts.map do |a|
     c = cache[a["id"]] || keyword_classify(a)
     next unless c["keep"]
+    next if c["by"] == "ai" && c["score"].to_i < MIN_SCORE
     title = c["title_en"].to_s.strip.empty? ? a["title"] : c["title_en"]
     a.merge("title" => title, "original" => (title == a["title"] ? "" : a["title"]),
             "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
