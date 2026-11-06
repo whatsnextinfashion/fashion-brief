@@ -14,6 +14,7 @@
 #  On a Mac:   ruby veille_mode.rb   (without GEMINI_API_KEY: keyword triage, no translation)
 #  Options:    --days 3   --no-open
 Encoding.default_external = Encoding::UTF_8
+$stdout.sync = true # show progress live in the GitHub logs
 require "net/http"; require "uri"; require "json"; require "rexml/document"
 require "time"; require "digest"; require "cgi"; require "openssl"; require "fileutils"
 
@@ -163,7 +164,7 @@ GEMINI = "https://generativelanguage.googleapis.com/v1beta"
 
 def gemini_request(path, key, body = nil)
   uri = URI(GEMINI + path)
-  Net::HTTP.start(uri.host, 443, use_ssl: true, open_timeout: 15, read_timeout: 180) do |h|
+  Net::HTTP.start(uri.host, 443, use_ssl: true, open_timeout: 15, read_timeout: 90) do |h|
     headers = { "x-goog-api-key" => key, "content-type" => "application/json" }
     body ? h.post(uri.path, JSON.generate(body), headers) : h.get(uri.path + "?pageSize=200", headers)
   end
@@ -180,8 +181,8 @@ def gemini_models(key)
                .map { |m| m["name"].sub("models/", "") }
                .select { |n| n =~ /flash/ && n !~ /image|tts|audio|live|thinking|exp|embedding|8b/ }
   version = lambda { |n| n[/(\d+(?:\.\d+)?)/, 1].to_f }
-  # newest first; stable before preview; full "flash" before "flash-lite"
-  names.sort_by { |n| [-version.call(n), n.include?("preview") ? 1 : 0, n.include?("lite") ? 1 : 0, n.size] }
+  # stable before preview (less overloaded); newest first; full "flash" before "flash-lite"
+  names.sort_by { |n| [n.include?("preview") ? 1 : 0, -version.call(n), n.include?("lite") ? 1 : 0, n.size] }
 end
 
 def ask_ai(batch, models, key)
@@ -189,22 +190,24 @@ def ask_ai(batch, models, key)
   body = { contents: [{ role: "user", parts: [{ text: prompt }] }],
            generationConfig: { temperature: 0, responseMimeType: "application/json" } }
   attempt = 0
-  while (model = models.first) && attempt < 4
+  while (model = models.first) && attempt < 6
     attempt += 1
     begin
       res = gemini_request("/models/#{model}:generateContent", key, body)
       if %w[400 404].include?(res.code) && models.size > 1
-        warn "  ! model #{model} unavailable (HTTP #{res.code}), trying #{models[1]}"
+        warn "  ! #{model} unavailable (HTTP #{res.code}), dropping it"
         models.shift
         next
       end
-      raise "HTTP #{res.code} #{res.body[0, 200]}" unless res.code == "200"
+      raise "HTTP #{res.code} #{res.body[0, 120]}" unless res.code == "200"
       parts = JSON.parse(res.body).dig("candidates", 0, "content", "parts").to_a
       text = parts.map { |p| p["text"].to_s }.join
       return JSON.parse(text[text.index("[")..text.rindex("]")])
     rescue StandardError => e
-      warn "  ! AI (attempt #{attempt}): #{e.message[0, 160]}"
-      sleep(e.message.include?("HTTP 429") ? 60 : 5 * attempt)
+      warn "  ! #{model} (attempt #{attempt}): #{e.message.gsub(/\s+/, ' ')[0, 140]}"
+      # Overloaded (503), out of free quota (429) or too slow: move on to the next Gemini model.
+      models.push(models.shift) if models.size > 1
+      sleep(e.message.include?("HTTP 429") ? 15 : 3)
     end
   end
   nil
@@ -238,7 +241,7 @@ def classify(arts, cache)
     warn "  ! No Gemini 'flash' model available: keyword triage only."
     return
   end
-  puts "AI triage of #{todo.size} new articles (Gemini #{models.first}, free tier)..."
+  puts "AI triage of #{todo.size} new articles (Gemini, free tier; models: #{models.first(4).join(", ")})..."
   failures = 0
   todo.each_slice(25).each_with_index do |b, i|
     sleep 6 if i > 0 # free tier: stay well under the requests-per-minute limit
