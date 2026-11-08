@@ -53,7 +53,7 @@ SOURCES = [
 ]
 
 CATEGORIES = ["Earnings & P&L", "Collaborations", "Store openings & retail", "M&A & investment",
-              "Appointments", "China & Asia", "Macro & geopolitics", "Strategy & product"]
+              "Appointments", "China & Asia", "Regulation & policy", "Macro & geopolitics", "Strategy & product"]
 
 TRADE = ["WWD", "Drapers", "FashionUnited", "FashionNetwork", "Vogue Business", "Jing Daily",
          "Journal du Luxe", "The Good Goods", "The Bold Way"]
@@ -64,9 +64,24 @@ KEYWORDS = {
   "M&A & investment" => /\b(acqui\w+|merger|stake|takeover|buys?|investment|IPO|rachat|rachète|cession|fusion|levée)\b/i,
   "Appointments" => /\b(appoint\w*|names?|CEO|chief executive|creative director|steps down|nomm\w+|directeur|directrice)\b/i,
   "China & Asia" => /\b(China|Chinese|Shanghai|Hong Kong|Asia|Japan|Korea|Chine|Asie|Japon|Corée)\b/i,
+  "Regulation & policy" => /\b(regulation|regulator|directive|law|bill|ban|ecodesign|greenwashing|de minimis|customs|duty|due diligence|EPR|r[ée]glementation|loi|directive|interdiction|douane|éco-conception)\b/i,
   "Macro & geopolitics" => /\b(tariffs?|trade war|inflation|consumer confidence|recession|currency|droits de douane)\b/i,
 }
 FASHION = /(fashion|luxury|apparel|retail|brand|LVMH|Kering|Hermès|Chanel|Prada|Gucci|Inditex|Zara|H&M|Nike|Adidas|Richemont|Tapestry|mode|luxe|prêt-à-porter|habillement|textile|maroquinerie|sneaker|beauty|beauté|department store)/i
+
+# Media accepted from the brand & regulation searches (recognised business / fashion / news media).
+TRUSTED = /\A(WWD|Vogue Business|Vogue|Business of Fashion|The Business of Fashion|FashionNetwork|FashionUnited|Drapers|Jing Daily|Journal du Luxe|Les Échos|Financial Times|Bloomberg|WSJ|Reuters|AFP|Associated Press|AP News|CNBC|Forbes|Fortune|Business Insider|Insider|The New York Times|New York Times|Washington Post|The Guardian|The Times|The Telegraph|Evening Standard|BBC|The Economist|Harper's BAZAAR|Harper's Bazaar|ELLE|Elle|Grazia|L'Officiel|Hypebeast|Highsnobiety|Glossy|Modern Retail|Retail Dive|Retail Gazette|Retail Week|Luxury Daily|Le Monde|Le Figaro|Madame Figaro|Le Parisien|Libération|L'Express|Le Point|Challenges|Capital|BFM|BFMTV|La Tribune|L'Opinion|Les Echos Week-End|Il Sole 24 Ore|Corriere della Sera|MF Fashion|Pambianco|Handelsblatt|Süddeutsche Zeitung|El País|Expansión|South China Morning Post|SCMP|Nikkei Asia|Nikkei|Caixin|Hindustan Times|The Times of India|Times of India|The Economic Times|Economic Times|Mint|Livemint|Business Standard|The Hindu|Vogue India|Arabian Business|The National|Gulf News|Yahoo Finance|MarketWatch|Barron's|Axios|Semafor|Politico|Euronews|Fashion Dive)\z/i
+
+def normalize_source(s)
+  s = s.to_s.strip
+  { /fashionnetwork/i => "FashionNetwork", /wall street journal|\bwsj\b/i => "WSJ", /bloomberg/i => "Bloomberg",
+    /financial times|\bft\.com/i => "Financial Times", /women'?s wear daily/i => "WWD", /les [ée]chos/i => "Les Échos",
+    /business of fashion/i => "Business of Fashion", /fashionunited/i => "FashionUnited", /reuters/i => "Reuters",
+    /south china morning post/i => "South China Morning Post", /harper'?s bazaar/i => "Harper's Bazaar",
+    /times of india/i => "The Times of India", /new york times/i => "The New York Times", /livemint/i => "Mint" }
+    .each { |rx, name| return name if s =~ rx }
+  s[0, 40]
+end
 
 # ─── Fetching ───
 def http_get(url, limit = 4)
@@ -101,7 +116,14 @@ def fetch(name, url)
     next if title.empty? || link !~ %r{\Ahttps?://}i # security: only real web links, never "javascript:" etc.
     2.times { title = title.sub(/\s+-\s+[^-]+\z/, "") } if gn # Google News appends " - Media"
     next if title.size < 20 || title =~ /Application error|Page \d+|^News\b|FashionNetwork France|^Find fashion jobs/i
-    items << { "source" => name, "title" => title, "link" => link,
+    source = name
+    if [BRAND_FEED, REG_FEED].include?(name) # searches: show the real media name (e.g. "Reuters", "Le Figaro")
+      pub = txt.call("source")
+      source = normalize_source(pub ? clean(pub.text) : "")
+      next unless source =~ TRUSTED # quality & safety: only recognised media, no unknown / spam sites
+    end
+    origin = name == BRAND_FEED ? "brands" : name == REG_FEED ? "regulation" : "media"
+    items << { "source" => source, "title" => title, "link" => link, "origin" => origin,
                "date" => parse_date(d && d.text).iso8601, "summary" => gn ? "" : clean(ds && ds.text)[0, 400] }
   end
   items
@@ -116,19 +138,44 @@ end
 
 # Fresh news only: articles published TODAY (Paris time), plus YESTERDAY's so that the evening
 # news published after the 6pm run is picked up by the next 7am run. Nothing older.
+# MY MEDIA (SOURCES) are the main feed. Two extras, on top of it:
+#  - "brands": other recognised media, kept ONLY when the article is about one of MY BRANDS;
+#  - "regulation": recognised media, kept ONLY when it is regulation impacting fashion retail / business.
+BRAND_FEED = "__brands__"
+REG_FEED   = "__regulation__"
+# Names too ambiguous for a web search on their own (the AI still knows them through the WATCHLIST).
+AMBIGUOUS = ["Bode", "The Row", "Pronounce", "Torani", "AMPM", "Caruso", "Celine", "Bally", "Etro", "Charvet"]
+
+# Extra feeds: any media talking about MY BRANDS (Google News search, English + French, last 2 days).
+def brand_feeds
+  names = WATCHLIST.values.join(", ").split(", ").map { |n| n.sub(/\s*\(.*\)/, "").strip } - AMBIGUOUS
+  names.each_slice(8).flat_map do |group|
+    q = "(" + group.map { |n| "\"#{n}\"" }.join(" OR ") + ") when:2d"
+    [[BRAND_FEED, gnews(q)], [BRAND_FEED, gnews(q, "fr")]]
+  end
+end
+
+# Extra feeds: regulation that can impact fashion retail & business (any media, last 2 days).
+REGULATION_FEEDS = [
+  [REG_FEED, gnews('(fashion OR apparel OR textile OR luxury OR retail) (regulation OR law OR directive OR ' \
+                     'ban OR "de minimis" OR customs OR tariff OR greenwashing OR ecodesign OR "due diligence") when:2d')],
+  [REG_FEED, gnews('(mode OR textile OR luxe OR habillement OR commerce) (loi OR réglementation OR directive OR ' \
+                     '"fast fashion" OR douane OR "droits de douane" OR greenwashing OR "éco-conception" OR REP) when:2d', "fr")],
+]
+
 def collect(days)
-  puts "Fetching #{SOURCES.size} feeds..."
-  raw = SOURCES.map { |n, u| Thread.new { fetch(n, u) } }.flat_map(&:value)
+  feeds = SOURCES + brand_feeds + REGULATION_FEEDS
+  puts "Fetching #{SOURCES.size} media feeds + #{feeds.size - SOURCES.size} searches (my brands, regulation)..."
+  raw = feeds.each_slice(8).flat_map { |batch| batch.map { |n, u| Thread.new { fetch(n, u) } }.flat_map(&:value) }
   start = Time.now - (days - 1) * 86_400
   cutoff = Time.new(start.year, start.month, start.day, 0, 0, 0) # midnight, Paris time
-  seen = {}
-  arts = raw.sort_by { |a| a["date"] }.reverse.select do |a|
+  unique = {}
+  raw.each do |a| # same article found twice: keep the version from MY MEDIA
     a["id"] = article_id(a)
-    t = Time.parse(a["date"])
-    ok = !seen[a["id"]] && t >= cutoff && t <= Time.now + 3600
-    seen[a["id"]] = true
-    ok
+    unique[a["id"]] = a if !unique[a["id"]] || (a["origin"] == "media" && unique[a["id"]]["origin"] != "media")
   end
+  arts = unique.values.select { |a| t = Time.parse(a["date"]); t >= cutoff && t <= Time.now + 3600 }
+               .sort_by { |a| a["date"] }.reverse
   puts "  #{raw.size} articles fetched, #{arts.size} unique published since #{cutoff.strftime('%a %d %b %H:%M')} (Paris)."
   File.write(ARTS, JSON.generate(arts))
   arts
@@ -156,7 +203,7 @@ WATCHLIST = {
 WATCH_RX = /\b(Louis Vuitton|Dior|Chanel|Herm[eè]s|Gucci|Saint Laurent|Bottega Veneta|Prada|Miu Miu|Fendi|Loewe|Balenciaga|Givenchy|Burberry|Armani|Versace|Valentino|Dolce|Ferragamo|Moncler|Margiela|McQueen|Goyard|Moynat|Loro Piana|Cucinelli|Berluti|Stefano Ricci|Charvet|Delvaux|Valextra|John Lobb|Corthay|Schiaparelli|Zegna|Brioni|Kiton|Attolini|Serapian|Lardini|Gaultier|Ala[iï]a|Courr[eè]ges|Pringle of Scotland|Smythson|Ralph Lauren|Tom Ford|Oscar de la Renta|Carolina Herrera|Khaite|Fear of God|Thom Browne|Proenza Schouler|Rick Owens|Chrome Hearts|Brandon Maxwell|Gabriela Hearst|Sabyasachi|Rahul Mishra|Anita Dongre|Tahiliani|Gaurav Gupta|Raw Mango|Abu Jani|Falguni|Anamika Khanna|Ritu Kumar|Payal Singhal|NorBlack|Shang Xia|Guo Pei|Shiatzy Chen|Uma Wang|Robert Wun|Feng Chen Wang|Sankuanz|Huishan Zhang|Ziggy Chen|Kenzo|Jacquemus|Dries Van Noten|Sacai|Issey Miyake|Acne Studios|Songmont|Marge Sherwood|Mansur Gavriel|LVMH|Kering|Richemont)\b/i
 
 # ─── AI triage ───
-PROMPT_V = 6 # bump when the triage rules change, so cached articles are re-triaged
+PROMPT_V = 8 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
@@ -164,15 +211,19 @@ PROMPT = <<~P
   KEEP: earnings / P&L / sales figures of fashion, luxury, sportswear or retail brands and groups; collaborations;
   store openings/closures, flagships, new markets; M&A, fundraising, disposals; executive and creative-director
   appointments; product / pricing / assortment / distribution strategy; China & Asia; macro, tariffs, geopolitics
-  or consumer trends THAT AFFECT fashion brands' margins.
+  or consumer trends THAT AFFECT fashion brands' margins;
+  REGULATION that can impact fashion retail & business (category "Regulation & policy"): anti fast-fashion laws,
+  customs / de minimis / tariffs on parcels, EU textile strategy, ecodesign & digital product passport, extended
+  producer responsibility (EPR/REP), greenwashing & green claims, supply-chain due diligence & forced labour,
+  labelling, sales & discount rules, e-commerce / marketplace rules, duty-free & tax refund, data & AI rules.
   REJECT: celebrities, red carpets, runway reviews, campaigns and ad films, product drops with no business angle,
   shopping tips, events/awards/galas, obituaries, trade-show previews, job ads, opinion pieces without news,
   small local brands with no wider lesson, pure beauty/food/hotels/tech/finance with no fashion-retail impact.
   ALWAYS REJECT style & consumer-magazine content: "best skirt/coat/bag of the season", colour or silhouette trends,
   what to wear, how to style, editors' picks, wish lists, gift guides, street style, celebrity looks, beauty looks,
   trend forecasts about clothes themselves. The brief is 100% BUSINESS (money, strategy, deals, people, markets).
-  BE STRICT: this brief is read in 10 minutes by a busy CEO. Typically only 15-25% of the articles deserve to be kept.
-  When in doubt, reject.
+  Keep every real business story (the page then shows only the 50 most important per day, so do not be stingy with
+  relevant business news - but never keep the REJECT content above).
   DUPLICATES: if several articles (even in different languages) cover the same story, keep ONE (the most complete)
   and set keep=false for the others.
 
@@ -186,7 +237,9 @@ PROMPT = <<~P
   Everything else (premium, mass market, sportswear, retail, macro) is important but secondary: rate it one notch
   lower than an equivalent luxury-fashion story.
 
-  WATCHLIST (the executive's brands, highest priority, +1 notch):
+  WATCHLIST (the executive's brands): a priority GUIDE, not a restriction. When an article is about one of these
+  brands, it must be kept (if it is business news) and rated +1 notch. Business news about OTHER fashion / leather
+  goods brands is still very welcome and is rated normally.
   %WATCH%
 
   Score (importance for a luxury-fashion CEO): 5 = must know today (results of a major fashion group, big fashion M&A,
@@ -347,19 +400,21 @@ def dedupe(arts, cache, models, key)
   end
   return unless groups.is_a?(Array)
   removed = 0
+  published = load_archive.map { |e| e["id"] }
   groups.each do |g|
     ids = Array(g).map(&:to_s).select { |id| cache[id] && cache[id]["keep"] }
     next if ids.size < 2
-    best = ids.max_by { |id| [cache[id]["score"].to_i, cache[id]["angle"].to_s.size] }
+    # a story already published in an earlier edition stays the reference: no repeat in the next edition
+    best = (ids & published).first || ids.max_by { |id| [cache[id]["score"].to_i, cache[id]["angle"].to_s.size] }
     (ids - [best]).each { |id| cache[id] = cache[id].merge("keep" => false, "dup_of" => best); removed += 1 }
   end
   puts "Removed #{removed} duplicate stories."
 end
 
 # ─── HTML page ───
-MIN_SCORE = 3  # only articles rated 3+ by the AI are shown (1-2 = minor)
-PER_DAY   = 50 # the 50 most important articles of EACH day
-KEEP_DAYS = 7  # articles older than 7 days disappear from the site automatically
+MIN_SCORE   = 3  # only articles rated 3+ by the AI are shown (1-2 = minor)
+PER_EDITION = 50 # each edition (7am and 6pm) adds the 50 most important NEW articles
+KEEP_DAYS   = 7  # articles older than 7 days disappear from the site automatically
 LUXURY = /\b(luxury|luxe|LVMH|Louis Vuitton|Dior|Kering|Gucci|Balenciaga|Saint Laurent|Herm[eè]s|Chanel|Richemont|Cartier|Prada|Miu Miu|Moncler|Armani|Burberry|Valentino|Zegna|Cucinelli|Loro Piana|Bottega|Fendi|Celine|Loewe|Tiffany|Bulgari|Rolex)\b/i
 
 def paris_day(iso)
@@ -380,7 +435,7 @@ def entry(a, cache)
     "title" => title, "original" => (title == a["title"] ? "" : a["title"]),
     "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
     "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s,
-    "by" => c["by"] == "ai" ? "ai" : "kw",
+    "by" => c["by"] == "ai" ? "ai" : "kw", "origin" => a["origin"] || "media",
     "luxury" => c["luxury"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)),
     "watch" => c["watch"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)) }
 end
@@ -390,21 +445,37 @@ def rank(e)
   [-e["score"], e["by"] == "ai" ? 0 : 1, e["watch"] ? 0 : 1, e["luxury"] ? 0 : 1, -Time.parse(e["date"]).to_i]
 end
 
+# Articles from the extra searches only count when they match their purpose.
+def eligible?(e)
+  case e["origin"]
+  when "brands" then e["watch"]                                        # other media: only about MY BRANDS
+  when "regulation" then e["cat"] == "Regulation & policy" || e["watch"] # only regulation (or my brands)
+  else true                                                            # MY MEDIA: everything kept by the AI
+  end
+end
+
+# Each run = one EDITION: the 50 most important articles published since the previous edition
+# (3 hours of overlap so nothing is missed), never an article already published before.
 def build(_days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
   cache = load_cache
-  fresh = arts.map { |a| entry(a, cache) }.compact
-  touched = arts.map { |a| paris_day(a["date"]) }.uniq # the days this run can still improve
   archive = load_archive
-  frozen = archive.reject { |e| touched.include?(e["day"]) }
-  # previously selected articles of the touched days stay candidates, unless the AI dropped them (e.g. duplicate)
-  previous = archive.select { |e| touched.include?(e["day"]) }.reject do |e|
-    (c = cache[e["id"]]) && c["v"] == PROMPT_V && (!c["keep"] || c["score"].to_i < MIN_SCORE)
-  end
-  pool = fresh + previous.reject { |e| fresh.any? { |f| f["id"] == e["id"] } }
-  selected = pool.group_by { |e| e["day"] }.values.flat_map { |es| es.sort_by { |e| rank(e) }.first(PER_DAY) }
-  oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
-  all = (frozen + selected).select { |e| e["day"] >= oldest }.sort_by { |e| e["date"] }.reverse
+  published = archive.map { |e| e["id"] }
+  last = archive.map { |e| e["edition_at"] }.compact.max
+  since = last ? Time.parse(last) - 3 * 3600 : Time.now - 24 * 3600
+  now = Time.now
+  label = "#{now.hour < 12 ? 'Morning' : 'Evening'} edition · #{now.strftime('%H:%M')}"
+  fresh = arts.map { |a| entry(a, cache) }.compact
+              .reject { |e| published.include?(e["id"]) }
+              .select { |e| eligible?(e) && Time.parse(e["date"]) >= since }
+  edition = fresh.sort_by { |e| rank(e) }.first(PER_EDITION)
+                 .map { |e| e.merge("edition" => label, "edition_at" => now.iso8601) }
+  oldest = (now - KEEP_DAYS * 86_400).iso8601
+  all = (archive + edition).map { |e| e["edition_at"] ? e : e.merge("edition" => "Earlier", "edition_at" => e["date"]) }
+                           .select { |e| e["edition_at"] >= oldest }
+  # newest edition first; inside an edition, the most important first
+  all = all.group_by { |e| e["edition_at"] }.sort_by { |at, _| at }.reverse.flat_map { |_, es| es.sort_by { |e| rank(e) } }
+  puts "New edition '#{label}': #{edition.size} articles (#{fresh.size} new candidates since #{since.strftime('%a %H:%M')})."
   File.write(ARCHIVE, JSON.generate(all))
   html = DATA.read.sub("__DATA__") { JSON.generate(all).gsub("</", "<\\/") }
              .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", KEEP_DAYS.to_s)
@@ -412,8 +483,7 @@ def build(_days)
              .sub("__CATS__") { JSON.generate(CATEGORIES) }
   FileUtils.mkdir_p(File.dirname(OUT))
   File.write(OUT, html)
-  per_day = all.group_by { |e| e["day"] }.map { |d, es| "#{d}: #{es.size}" }.join(", ")
-  puts "Done: #{all.size} articles on the site (#{per_day}) -> #{OUT}"
+  puts "Done: #{all.size} articles on the site (#{all.map { |e| e['edition_at'] }.uniq.size} editions) -> #{OUT}"
 end
 
 days = (ARGV.index("--days") ? ARGV[ARGV.index("--days") + 1].to_i : 2)
@@ -476,7 +546,7 @@ input{flex:1;min-width:180px}
 <div id="list"></div></main></div>
 <script>
 const A=__DATA__, CATS=__CATS__, GEN=new Date("__GEN__"); let fc=null, fs=null;
-document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · top 50 per day · last __DAYS__ days';
+document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · 50 new articles at 7am & 6pm · last __DAYS__ days';
 let read={}; try{read=JSON.parse(localStorage.getItem('brief_read')||'{}')}catch(e){}
 const $=s=>document.querySelector(s), esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.cat:a.source)===v).length;
@@ -489,8 +559,8 @@ function draw(){
  let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(imp!=="lux"||a.luxury)&&(imp!=="watch"||a.watch)&&(imp!=="today"||a.day===TODAY)&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
  if($('#sort').value==='score')L.sort((x,y)=>y.score-x.score||y.date.localeCompare(x.date));
  let h='',last='';
- for(const a of L){const d=new Date(a.date), day=d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'});
-  if($('#sort').value==='date'&&day!==last){h+=`<div class="day">${day}</div>`;last=day}
+ for(const a of L){const d=new Date(a.date), ed=new Date(a.edition_at||a.date), day=ed.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})+(a.edition?' · '+a.edition:'');
+  if($('#sort').value==='date'&&day!==last){h+=`<div class="day">${esc(day)}</div>`;last=day}
   h+=`<a class="it ${read[a.id]?'read':''}" href="${esc(a.link)}" target="_blank" rel="noopener" data-id="${a.id}"${a.original?` title="Original: ${esc(a.original)}"`:''}>
   <div class="meta"><span class="src">${esc(a.source)}</span><span>${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>
   ${a.watch?`<span class="lux">My brand</span>`:a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
