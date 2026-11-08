@@ -1,4 +1,4 @@
-# Runs every morning on GitHub's servers (your computer can be off)
+# Runs twice a day on GitHub's servers (your computer can be off): 7am and 6pm, Paris time,
 # and publishes the page with GitHub Pages.
 #
 # Security: the Gemini key lives only in GitHub "Secrets" (encrypted, never in the files,
@@ -7,7 +7,12 @@ name: Daily fashion brief
 
 on:
   schedule:
-    - cron: "0 5 * * *"   # 05:00 UTC = 6am Paris (winter) / 7am (summer)
+    # GitHub only knows UTC time. Paris = UTC+1 in winter, UTC+2 in summer, so each slot has
+    # two alarms and the "Check the time" step below keeps only the right one.
+    - cron: "0 6 * * *"    # 7am Paris in winter
+    - cron: "0 5 * * *"    # 7am Paris in summer
+    - cron: "0 17 * * *"   # 6pm Paris in winter
+    - cron: "0 16 * * *"   # 6pm Paris in summer
   workflow_dispatch:       # "Run workflow" button (only you, the owner, can press it)
 
 permissions:
@@ -22,18 +27,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Check the time (Paris)
+        id: gate
+        run: |
+          OFFSET=$(TZ=Europe/Paris date +%z)   # +0100 in winter, +0200 in summer
+          CRON="${{ github.event.schedule }}"
+          GO=no
+          if [ "${{ github.event_name }}" != "schedule" ]; then GO=yes; fi
+          if [ "$OFFSET" = "+0100" ] && { [ "$CRON" = "0 6 * * *" ] || [ "$CRON" = "0 17 * * *" ]; }; then GO=yes; fi
+          if [ "$OFFSET" = "+0200" ] && { [ "$CRON" = "0 5 * * *" ] || [ "$CRON" = "0 16 * * *" ]; }; then GO=yes; fi
+          echo "Paris offset $OFFSET, alarm '$CRON' -> run: $GO"
+          echo "go=$GO" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'yes'
       - uses: ruby/setup-ruby@v1
+        if: steps.gate.outputs.go == 'yes'
         with:
           ruby-version: "3.3"
       - name: Fetch, triage with AI, build the page
+        if: steps.gate.outputs.go == 'yes'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}   # free Google AI key, stored in Settings > Secrets
         run: ruby veille_mode.rb --no-open
       - name: Save the new page
+        if: steps.gate.outputs.go == 'yes'
         run: |
           git config user.name "fashion-brief-bot"
           git config user.email "actions@users.noreply.github.com"
           git add -A docs veille_*.json
-          git commit -m "Daily brief $(date -u +%F)" || echo "No changes"
+          git commit -m "Brief $(TZ=Europe/Paris date '+%F %Hh')" || echo "No changes"
           git push
