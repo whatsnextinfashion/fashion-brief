@@ -21,7 +21,11 @@ Your computer can be off.
 5. **Actions** → *Daily fashion brief* → **Run workflow** (premier lancement, ~3 min).
 6. Ta page : `https://<ton-pseudo>.github.io/fashion-brief/` → ajoute-la à l'écran d'accueil de ton téléphone.
 
-Ensuite elle se met à jour toute seule chaque matin (~6 h / 7 h, heure de Paris).
+Ensuite elle se met à jour toute seule **2 fois par jour : 7 h et 18 h (heure de Paris)**.
+- **50 articles par jour** (les plus importants, tes marques et le luxe-mode en premier).
+- Seulement des **news du jour** (et de la veille au soir) — jamais d'articles de plusieurs jours.
+- Les articles de plus de **7 jours disparaissent** automatiquement du site.
+- **Tes marques** : liste `WATCHLIST` en haut de `veille_mode.rb` (filtre « My brands » sur le site).
 Pour forcer une mise à jour : **Actions → Daily fashion brief → Run workflow**.
 
 ## Sécurité

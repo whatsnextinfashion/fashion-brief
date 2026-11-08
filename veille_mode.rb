@@ -14,6 +14,7 @@
 #  On a Mac:   ruby veille_mode.rb   (without GEMINI_API_KEY: keyword triage, no translation)
 #  Options:    --days 3   --no-open
 Encoding.default_external = Encoding::UTF_8
+ENV["TZ"] = "Europe/Paris" # all dates ("today", 7am, 6pm) are in Paris time
 $stdout.sync = true # show progress live in the GitHub logs
 require "net/http"; require "uri"; require "json"; require "rexml/document"
 require "time"; require "digest"; require "cgi"; require "openssl"; require "fileutils"
@@ -21,6 +22,7 @@ require "time"; require "digest"; require "cgi"; require "openssl"; require "fil
 HERE  = File.expand_path(File.dirname(__FILE__))
 CACHE = File.join(HERE, "veille_cache.json")
 ARTS  = File.join(HERE, "veille_articles.json")
+ARCHIVE = File.join(HERE, "veille_archive.json") # the articles shown on the site (7 days x 50/day)
 OUT   = File.join(HERE, "docs", "index.html")
 UA = "Mozilla/5.0 (Macintosh) FashionBrief/1.0"
 
@@ -32,22 +34,22 @@ end
 # ─── MY MEDIA LIST ─── (add / remove lines freely)
 # Media without a public RSS feed (or blocked / paywalled) go through Google News.
 SOURCES = [
-  ["Vogue Business",  gnews("site:voguebusiness.com when:7d")],
-  ["WSJ",             gnews("site:wsj.com (fashion OR luxury OR apparel OR retailer) when:7d")],
+  ["Vogue Business",  gnews("site:voguebusiness.com when:2d")],
+  ["WSJ",             gnews("site:wsj.com (fashion OR luxury OR apparel OR retailer) when:2d")],
   ["WWD",             "https://wwd.com/business-news/feed/"],
   ["WWD",             "https://wwd.com/feed/"],
-  ["FashionNetwork",  gnews("site:fashionnetwork.com when:3d", "fr")],
-  ["FashionNetwork",  gnews("site:fashionnetwork.com when:3d")],
-  ["Jing Daily",      gnews("site:jingdaily.com when:7d")],
-  ["Journal du Luxe", gnews("site:journalduluxe.fr when:7d", "fr")],
-  ["Drapers",         gnews("site:drapersonline.com when:7d")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com when:2d")],
+  ["Jing Daily",      gnews("site:jingdaily.com when:2d")],
+  ["Journal du Luxe", gnews("site:journalduluxe.fr when:2d", "fr")],
+  ["Drapers",         gnews("site:drapersonline.com when:2d")],
   ["FashionUnited",   "https://fashionunited.com/rss-news"],
   ["The Good Goods",  "https://thegoodgoods.fr/feed/"],
   ["The Bold Way",    gnews("site:theboldway.fr", "fr")],
-  ["Les Échos",       gnews("site:lesechos.fr (luxe OR mode OR distribution OR retail) when:7d", "fr")],
+  ["Les Échos",       gnews("site:lesechos.fr (luxe OR mode OR distribution OR retail) when:2d", "fr")],
   ["Financial Times", "https://www.ft.com/retail-consumer?format=rss"],
   ["Financial Times", "https://www.ft.com/luxury-goods?format=rss"],
-  ["Bloomberg",       gnews("site:bloomberg.com (luxury OR fashion OR apparel OR retail OR consumer) when:7d")],
+  ["Bloomberg",       gnews("site:bloomberg.com (luxury OR fashion OR apparel OR retail OR consumer) when:2d")],
 ]
 
 CATEGORIES = ["Earnings & P&L", "Collaborations", "Store openings & retail", "M&A & investment",
@@ -112,24 +114,49 @@ def article_id(a)
   Digest::SHA1.hexdigest(a["title"].downcase.gsub(/[^[:alnum:]]/, ""))[0, 12]
 end
 
+# Fresh news only: articles published TODAY (Paris time), plus YESTERDAY's so that the evening
+# news published after the 6pm run is picked up by the next 7am run. Nothing older.
 def collect(days)
   puts "Fetching #{SOURCES.size} feeds..."
   raw = SOURCES.map { |n, u| Thread.new { fetch(n, u) } }.flat_map(&:value)
-  cutoff = Time.now.utc - days * 86_400
+  start = Time.now - (days - 1) * 86_400
+  cutoff = Time.new(start.year, start.month, start.day, 0, 0, 0) # midnight, Paris time
   seen = {}
   arts = raw.sort_by { |a| a["date"] }.reverse.select do |a|
     a["id"] = article_id(a)
-    ok = !seen[a["id"]] && Time.parse(a["date"]) >= cutoff
+    t = Time.parse(a["date"])
+    ok = !seen[a["id"]] && t >= cutoff && t <= Time.now + 3600
     seen[a["id"]] = true
     ok
   end
-  puts "  #{raw.size} articles fetched, #{arts.size} unique over #{days} days."
+  puts "  #{raw.size} articles fetched, #{arts.size} unique published since #{cutoff.strftime('%a %d %b %H:%M')} (Paris)."
   File.write(ARTS, JSON.generate(arts))
   arts
 end
 
+# ─── MY BRANDS (watchlist) ─── highest priority; add / remove names freely
+WATCHLIST = {
+  "Luxury houses & groups" => "Louis Vuitton, Dior, Chanel, Hermès, Gucci, Saint Laurent, Bottega Veneta, Prada, Miu Miu, " \
+    "Fendi, Celine, Loewe, Balenciaga, Givenchy, Burberry, Giorgio Armani, Versace, Valentino, Dolce & Gabbana, " \
+    "Salvatore Ferragamo, Moncler, Maison Margiela, Alexander McQueen, Goyard, Moynat",
+  "Craftsmanship, tailoring & leather" => "Loro Piana, Brunello Cucinelli, Berluti, Stefano Ricci, Charvet, Delvaux, " \
+    "Valextra, John Lobb, Corthay, Schiaparelli, Etro, Ermenegildo Zegna, Brioni, Kiton, Cesare Attolini, Serapian, " \
+    "Lardini, Bally, Jean Paul Gaultier, Alaïa, Courrèges, Caruso, Valstar, Pringle of Scotland, Smythson",
+  "American luxury & designers" => "Ralph Lauren (Purple Label), Tom Ford, The Row, Oscar de la Renta, Carolina Herrera, " \
+    "Khaite, Bode, Fear of God, Thom Browne, Proenza Schouler, Rick Owens, Chrome Hearts, Lela Rose, Brandon Maxwell, " \
+    "Gabriela Hearst",
+  "Indian luxury & couture" => "Sabyasachi, Rahul Mishra, Anita Dongre, Tarun Tahiliani, Gaurav Gupta, Raw Mango, " \
+    "Abu Jani Sandeep Khosla, Falguni Shane Peacock, Anamika Khanna, Ritu Kumar, Torani, Payal Singhal, AMPM, NorBlack NorWhite",
+  "Chinese luxury & couture" => "Shang Xia, Guo Pei, Shiatzy Chen, Uma Wang, Robert Wun, Ms MIN, Chen Peng, Feng Chen Wang, " \
+    "Sankuanz, Huishan Zhang, Pronounce, Maison Sans Titre, Xu Zhi, Samuel Gui Yang, Ziggy Chen",
+  "International designer houses" => "Kenzo, Jacquemus, Dries Van Noten, Sacai, Issey Miyake, Acne Studios",
+  "Emerging houses" => "Songmont, Marge Sherwood, Mansur Gavriel",
+}
+# Without AI, only unambiguous names are matched (e.g. not "Bode", "The Row" or "Celine").
+WATCH_RX = /\b(Louis Vuitton|Dior|Chanel|Herm[eè]s|Gucci|Saint Laurent|Bottega Veneta|Prada|Miu Miu|Fendi|Loewe|Balenciaga|Givenchy|Burberry|Armani|Versace|Valentino|Dolce|Ferragamo|Moncler|Margiela|McQueen|Goyard|Moynat|Loro Piana|Cucinelli|Berluti|Stefano Ricci|Charvet|Delvaux|Valextra|John Lobb|Corthay|Schiaparelli|Zegna|Brioni|Kiton|Attolini|Serapian|Lardini|Gaultier|Ala[iï]a|Courr[eè]ges|Pringle of Scotland|Smythson|Ralph Lauren|Tom Ford|Oscar de la Renta|Carolina Herrera|Khaite|Fear of God|Thom Browne|Proenza Schouler|Rick Owens|Chrome Hearts|Brandon Maxwell|Gabriela Hearst|Sabyasachi|Rahul Mishra|Anita Dongre|Tahiliani|Gaurav Gupta|Raw Mango|Abu Jani|Falguni|Anamika Khanna|Ritu Kumar|Payal Singhal|NorBlack|Shang Xia|Guo Pei|Shiatzy Chen|Uma Wang|Robert Wun|Feng Chen Wang|Sankuanz|Huishan Zhang|Ziggy Chen|Kenzo|Jacquemus|Dries Van Noten|Sacai|Issey Miyake|Acne Studios|Songmont|Marge Sherwood|Mansur Gavriel|LVMH|Kering|Richemont)\b/i
+
 # ─── AI triage ───
-PROMPT_V = 4 # bump when the triage rules change, so cached articles are re-triaged
+PROMPT_V = 6 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
@@ -151,17 +178,26 @@ PROMPT = <<~P
 
   Categories: %CATS%
 
-  PRIORITY #1 = LUXURY (LVMH and its maisons, Kering, Hermès, Chanel, Richemont, Prada, Moncler, Armani, Burberry,
-  Capri, Tapestry, Valentino, Zegna, Brunello Cucinelli, luxury watches & jewellery, luxury department stores, luxury
-  in China/Asia/Middle East...). Everything else (premium, mass market, sportswear, retail, macro) is important but
-  secondary: rate it one notch lower than an equivalent luxury story.
+  PRIORITY #1 = LUXURY FASHION: ready-to-wear, couture, leather goods, shoes, tailoring and knitwear of luxury and
+  designer fashion houses - above all the WATCHLIST brands below (and their groups: LVMH, Kering, Richemont, Prada
+  Group, OTB, Puig fashion...). The executive cares about FASHION, not "luxury in general":
+  luxury that is NOT fashion (hotels, real estate, wine & spirits, cars, yachts, art, pure watch or jewellery brands,
+  pure beauty/fragrance) is secondary - keep it only if it is big news, and never mark it as luxury.
+  Everything else (premium, mass market, sportswear, retail, macro) is important but secondary: rate it one notch
+  lower than an equivalent luxury-fashion story.
 
-  Score (importance for a luxury-focused fashion CEO): 5 = must know today (major luxury group results, big luxury M&A,
-  top creative/CEO change at a luxury house); 4 = important (luxury brand move, or a major non-luxury event);
-  3 = useful context; 1-2 = minor (it will not be shown).
+  WATCHLIST (the executive's brands, highest priority, +1 notch):
+  %WATCH%
+
+  Score (importance for a luxury-fashion CEO): 5 = must know today (results of a major fashion group, big fashion M&A,
+  CEO / creative-director change at a watchlist house); 4 = important (move of a watchlist brand, or a major
+  non-luxury event); 3 = useful context; 1-2 = minor (it will not be shown).
 
   Reply ONLY with JSON: a list of objects {"id": ..., "keep": true/false, "cat": "<category>",
-  "score": 1-5, "luxury": true/false (is it about the luxury sector?),
+  "score": 1-5, "luxury": true ONLY if the story is mainly about a luxury FASHION house/group or the luxury fashion
+  market (false for non-fashion luxury, premium/accessible brands such as Lacoste, Coach, Canada Goose, Hugo Boss,
+  Pandora, general retail/department stores and macro news),
+  "watch": true if the story is about a WATCHLIST brand (or its group, when the news concerns its fashion business),
   "title_en": "<headline in natural English; translate if it is in French>",
   "angle": "<in English, 1 sentence, max 20 words: why it matters for the business / merchandising>"}.
   For keep=false, just return {"id": ..., "keep": false}.
@@ -203,7 +239,7 @@ def gemini_models(key)
 end
 
 def ask_ai(batch, models, key)
-  prompt = PROMPT.sub("%CATS%", CATEGORIES.join(", ")) + batch.map { |a| "- " + line(a) }.join("\n")
+  prompt = PROMPT.sub("%CATS%", CATEGORIES.join(", ")).sub("%WATCH%", WATCHLIST.map { |k, v| "- #{k}: #{v}" }.join("\n")) + batch.map { |a| "- " + line(a) }.join("\n")
   body = { contents: [{ role: "user", parts: [{ text: prompt }] }],
            generationConfig: { temperature: 0, responseMimeType: "application/json" } }
   attempt = 0
@@ -234,8 +270,10 @@ def keyword_classify(a)
   text = "#{a['title']} #{a['summary']}"
   cats = KEYWORDS.select { |_, rx| text =~ rx }.keys
   # without AI: stricter keyword rule (at least 2 business signals)
-  return { "keep" => false } if cats.size < 2 || !(TRADE.include?(a["source"]) || text =~ FASHION)
-  { "keep" => true, "cat" => cats.first, "score" => [5, 2 + cats.size].min, "angle" => "" }
+  watch = !!(text =~ WATCH_RX)
+  return { "keep" => false } if cats.empty? || !(cats.size >= 2 || watch) || !(TRADE.include?(a["source"]) || text =~ FASHION || watch)
+  # capped at 3 so that AI-rated articles always rank first in the top 50
+  { "keep" => true, "cat" => cats.first, "score" => 3, "angle" => "" }
 end
 
 def load_cache
@@ -261,7 +299,12 @@ def classify(arts, cache)
   end
   puts "AI triage of #{todo.size} new articles (Gemini, free tier; models: #{models.first(4).join(", ")})..."
   failures = 0
-  todo.each_slice(25).each_with_index do |b, i|
+  deadline = Time.now + 12 * 60 # time budget: always publish the page well before GitHub's 20-minute limit
+  todo.each_slice(40).each_with_index do |b, i| # 40 per request = fewer requests (free daily quota)
+    if Time.now > deadline
+      warn "  ! time budget reached: the remaining articles will be triaged on the next run"
+      break
+    end
     sleep 6 if i > 0 # free tier: stay well under the requests-per-minute limit
     res = ask_ai(b, models, key)
     if res.nil?
@@ -271,8 +314,8 @@ def classify(arts, cache)
     end
     res.each { |r| cache[r["id"].to_s] = r.merge("by" => "ai", "v" => PROMPT_V) if r.is_a?(Hash) && r["id"] }
   end
-  dedupe(arts, cache, models, key)
-  live = arts.map { |a| a["id"] }
+  dedupe(arts, cache, models, key) if Time.now < deadline + 120
+  live = arts.map { |a| a["id"] } + load_archive.map { |e| e["id"] }
   File.write(CACHE, JSON.generate(cache.select { |k, _| live.include?(k) })) # keep the cache small
 end
 
@@ -314,35 +357,66 @@ def dedupe(arts, cache, models, key)
 end
 
 # ─── HTML page ───
-MIN_SCORE = 3     # only articles rated 3+ by the AI are shown (1-2 = minor)
-MAX_ARTICLES = 50 # the page shows at most the 50 most important articles
+MIN_SCORE = 3  # only articles rated 3+ by the AI are shown (1-2 = minor)
+PER_DAY   = 50 # the 50 most important articles of EACH day
+KEEP_DAYS = 7  # articles older than 7 days disappear from the site automatically
 LUXURY = /\b(luxury|luxe|LVMH|Louis Vuitton|Dior|Kering|Gucci|Balenciaga|Saint Laurent|Herm[eè]s|Chanel|Richemont|Cartier|Prada|Miu Miu|Moncler|Armani|Burberry|Valentino|Zegna|Cucinelli|Loro Piana|Bottega|Fendi|Celine|Loewe|Tiffany|Bulgari|Rolex)\b/i
 
-def build(days)
+def paris_day(iso)
+  Time.parse(iso).localtime.strftime("%Y-%m-%d") # TZ is Europe/Paris (set at the top)
+end
+
+def load_archive
+  File.exist?(ARCHIVE) ? JSON.parse(File.read(ARCHIVE)) : []
+end
+
+# Turns a triaged article into a page entry (nil if it is not kept).
+def entry(a, cache)
+  c = cache[a["id"]] || keyword_classify(a)
+  return nil unless c["keep"]
+  return nil if c["by"] == "ai" && c["score"].to_i < MIN_SCORE
+  title = c["title_en"].to_s.strip.empty? ? a["title"] : c["title_en"]
+  { "id" => a["id"], "source" => a["source"], "link" => a["link"], "date" => a["date"], "day" => paris_day(a["date"]),
+    "title" => title, "original" => (title == a["title"] ? "" : a["title"]),
+    "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
+    "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s,
+    "by" => c["by"] == "ai" ? "ai" : "kw",
+    "luxury" => c["luxury"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)),
+    "watch" => c["watch"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)) }
+end
+
+def rank(e)
+  # highest score first, AI-rated before keyword-only, luxury first on equal score, then the most recent
+  [-e["score"], e["by"] == "ai" ? 0 : 1, e["watch"] ? 0 : 1, e["luxury"] ? 0 : 1, -Time.parse(e["date"]).to_i]
+end
+
+def build(_days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
   cache = load_cache
-  kept = arts.map do |a|
-    c = cache[a["id"]] || keyword_classify(a)
-    next unless c["keep"]
-    next if c["by"] == "ai" && c["score"].to_i < MIN_SCORE
-    title = c["title_en"].to_s.strip.empty? ? a["title"] : c["title_en"]
-    a.merge("title" => title, "original" => (title == a["title"] ? "" : a["title"]),
-            "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
-            "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s,
-            "luxury" => c["luxury"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ LUXURY)))
-  end.compact
-  # Keep the MAX_ARTICLES best: highest score first, luxury first on equal score, then the most recent.
-  kept = kept.sort_by { |a| [-a["score"], a["luxury"] ? 0 : 1, -Time.parse(a["date"]).to_i] }.first(MAX_ARTICLES)
-  kept.sort_by! { |a| a["date"] }.reverse!
-  html = DATA.read.sub("__DATA__") { JSON.generate(kept).gsub("</", "<\\/") }
-             .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", days.to_s)
+  fresh = arts.map { |a| entry(a, cache) }.compact
+  touched = arts.map { |a| paris_day(a["date"]) }.uniq # the days this run can still improve
+  archive = load_archive
+  frozen = archive.reject { |e| touched.include?(e["day"]) }
+  # previously selected articles of the touched days stay candidates, unless the AI dropped them (e.g. duplicate)
+  previous = archive.select { |e| touched.include?(e["day"]) }.reject do |e|
+    (c = cache[e["id"]]) && c["v"] == PROMPT_V && (!c["keep"] || c["score"].to_i < MIN_SCORE)
+  end
+  pool = fresh + previous.reject { |e| fresh.any? { |f| f["id"] == e["id"] } }
+  selected = pool.group_by { |e| e["day"] }.values.flat_map { |es| es.sort_by { |e| rank(e) }.first(PER_DAY) }
+  oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
+  all = (frozen + selected).select { |e| e["day"] >= oldest }.sort_by { |e| e["date"] }.reverse
+  File.write(ARCHIVE, JSON.generate(all))
+  html = DATA.read.sub("__DATA__") { JSON.generate(all).gsub("</", "<\\/") }
+             .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", KEEP_DAYS.to_s)
+             .sub("__TODAY__", Time.now.strftime("%Y-%m-%d"))
              .sub("__CATS__") { JSON.generate(CATEGORIES) }
   FileUtils.mkdir_p(File.dirname(OUT))
   File.write(OUT, html)
-  puts "Done: #{kept.size} fashion business articles kept out of #{arts.size} -> #{OUT}"
+  per_day = all.group_by { |e| e["day"] }.map { |d, es| "#{d}: #{es.size}" }.join(", ")
+  puts "Done: #{all.size} articles on the site (#{per_day}) -> #{OUT}"
 end
 
-days = (ARGV.index("--days") ? ARGV[ARGV.index("--days") + 1].to_i : 3)
+days = (ARGV.index("--days") ? ARGV[ARGV.index("--days") + 1].to_i : 2)
 case ARGV.first
 when "build" then build(days)
 else
@@ -398,11 +472,11 @@ input{flex:1;min-width:180px}
 <div class="bar"><button class="f menu" onclick="side.classList.toggle('open')">☰ Filters</button>
 <input id="q" placeholder="Search (brand, country, group…)">
 <select id="sort"><option value="date">Latest</option><option value="score">Most important</option></select>
-<select id="imp"><option value="1">All (top 50)</option><option value="lux">Luxury only</option><option value="4">Must-read (★4+)</option></select></div>
+<select id="imp"><option value="1">All (7 days)</option><option value="today">Today only</option><option value="watch">My brands</option><option value="lux">Luxury fashion</option><option value="4">Must-read (★4+)</option></select></div>
 <div id="list"></div></main></div>
 <script>
 const A=__DATA__, CATS=__CATS__, GEN=new Date("__GEN__"); let fc=null, fs=null;
-document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · last __DAYS__ days';
+document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · top 50 per day · last __DAYS__ days';
 let read={}; try{read=JSON.parse(localStorage.getItem('brief_read')||'{}')}catch(e){}
 const $=s=>document.querySelector(s), esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.cat:a.source)===v).length;
@@ -411,15 +485,15 @@ function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.c
 function draw(){
  btns('cats',CATS.filter(c=>A.some(a=>a.cat===c)),fc,v=>fc=v);
  btns('srcs',[...new Set(A.map(a=>a.source))].sort(),fs,v=>fs=v);
- const q=$("#q").value.toLowerCase(), imp=$("#imp").value, min=imp==="lux"?1:+imp;
- let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(imp!=="lux"||a.luxury)&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
+ const q=$("#q").value.toLowerCase(), imp=$("#imp").value, min=(imp==="lux"||imp==="today"||imp==="watch")?1:+imp, TODAY="__TODAY__";
+ let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(imp!=="lux"||a.luxury)&&(imp!=="watch"||a.watch)&&(imp!=="today"||a.day===TODAY)&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
  if($('#sort').value==='score')L.sort((x,y)=>y.score-x.score||y.date.localeCompare(x.date));
  let h='',last='';
  for(const a of L){const d=new Date(a.date), day=d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'});
   if($('#sort').value==='date'&&day!==last){h+=`<div class="day">${day}</div>`;last=day}
   h+=`<a class="it ${read[a.id]?'read':''}" href="${esc(a.link)}" target="_blank" rel="noopener" data-id="${a.id}"${a.original?` title="Original: ${esc(a.original)}"`:''}>
   <div class="meta"><span class="src">${esc(a.source)}</span><span>${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>
-  ${a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
+  ${a.watch?`<span class="lux">My brand</span>`:a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
   <div class="t">${esc(a.title)}</div>${a.angle?`<div class="a">→ ${esc(a.angle)}</div>`:''}</a>`}
  $('#list').innerHTML=h||'<div class="empty">No articles match these filters.</div>';
  document.querySelectorAll('.it').forEach(e=>e.onclick=()=>{read[e.dataset.id]=1;e.classList.add('read');
