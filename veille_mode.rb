@@ -23,9 +23,14 @@ HERE  = File.expand_path(File.dirname(__FILE__))
 CACHE = File.join(HERE, "veille_cache.json")
 ARTS  = File.join(HERE, "veille_articles.json")
 ARCHIVE = File.join(HERE, "veille_archive.json") # the articles shown on the site (7 days x 50/day)
-# Normal runs look at today + yesterday. While the site has less than 5 days of history, look back 7 days
-# so that the whole week is filled at once.
-WINDOW_DAYS = ((JSON.parse(File.read(ARCHIVE)).map { |e| e["day"] }.uniq.size rescue 0) < 5) ? 7 : 2
+# Normal runs look at today + yesterday. While the site is not complete (less than 5 days, or some articles
+# not yet sorted by the AI, e.g. after a Gemini outage), look back 7 days so the gaps get filled.
+WINDOW_DAYS = begin
+  shown = JSON.parse(File.read(ARCHIVE))
+  shown.map { |e| e["day"] }.uniq.size < 5 || shown.any? { |e| e["by"] != "ai" } ? 7 : 2
+rescue StandardError
+  7
+end
 OUT   = File.join(HERE, "docs", "index.html")
 UA = "Mozilla/5.0 (Macintosh) FashionBrief/1.0"
 
