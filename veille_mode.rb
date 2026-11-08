@@ -23,11 +23,15 @@ HERE  = File.expand_path(File.dirname(__FILE__))
 CACHE = File.join(HERE, "veille_cache.json")
 ARTS  = File.join(HERE, "veille_articles.json")
 ARCHIVE = File.join(HERE, "veille_archive.json") # the articles shown on the site (7 days x 50/day)
+# Normal runs look at today + yesterday. While the site has less than 5 days of history, look back 7 days
+# so that the whole week is filled at once.
+WINDOW_DAYS = ((JSON.parse(File.read(ARCHIVE)).map { |e| e["day"] }.uniq.size rescue 0) < 5) ? 7 : 2
 OUT   = File.join(HERE, "docs", "index.html")
 UA = "Mozilla/5.0 (Macintosh) FashionBrief/1.0"
 
 def gnews(q, lang = "en")
   loc = lang == "fr" ? "hl=fr&gl=FR&ceid=FR:fr" : "hl=en-US&gl=US&ceid=US:en"
+  q = q.gsub("when:2d", "when:#{WINDOW_DAYS}d") # 7 days while the site is filling up, then 2 days
   "https://news.google.com/rss/search?q=#{URI.encode_www_form_component(q)}&#{loc}"
 end
 
@@ -203,48 +207,38 @@ WATCHLIST = {
 WATCH_RX = /\b(Louis Vuitton|Dior|Chanel|Herm[eè]s|Gucci|Saint Laurent|Bottega Veneta|Prada|Miu Miu|Fendi|Loewe|Balenciaga|Givenchy|Burberry|Armani|Versace|Valentino|Dolce|Ferragamo|Moncler|Margiela|McQueen|Goyard|Moynat|Loro Piana|Cucinelli|Berluti|Stefano Ricci|Charvet|Delvaux|Valextra|John Lobb|Corthay|Schiaparelli|Zegna|Brioni|Kiton|Attolini|Serapian|Lardini|Gaultier|Ala[iï]a|Courr[eè]ges|Pringle of Scotland|Smythson|Ralph Lauren|Tom Ford|Oscar de la Renta|Carolina Herrera|Khaite|Fear of God|Thom Browne|Proenza Schouler|Rick Owens|Chrome Hearts|Brandon Maxwell|Gabriela Hearst|Sabyasachi|Rahul Mishra|Anita Dongre|Tahiliani|Gaurav Gupta|Raw Mango|Abu Jani|Falguni|Anamika Khanna|Ritu Kumar|Payal Singhal|NorBlack|Shang Xia|Guo Pei|Shiatzy Chen|Uma Wang|Robert Wun|Feng Chen Wang|Sankuanz|Huishan Zhang|Ziggy Chen|Kenzo|Jacquemus|Dries Van Noten|Sacai|Issey Miyake|Acne Studios|Songmont|Marge Sherwood|Mansur Gavriel|LVMH|Kering|Richemont)\b/i
 
 # ─── AI triage ───
-PROMPT_V = 8 # bump when the triage rules change, so cached articles are re-triaged
+PROMPT_V = 9 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
 
-  KEEP: earnings / P&L / sales figures of fashion, luxury, sportswear or retail brands and groups; collaborations;
-  store openings/closures, flagships, new markets; M&A, fundraising, disposals; executive and creative-director
-  appointments; product / pricing / assortment / distribution strategy; China & Asia; macro, tariffs, geopolitics
-  or consumer trends THAT AFFECT fashion brands' margins;
-  REGULATION that can impact fashion retail & business (category "Regulation & policy"): anti fast-fashion laws,
-  customs / de minimis / tariffs on parcels, EU textile strategy, ecodesign & digital product passport, extended
-  producer responsibility (EPR/REP), greenwashing & green claims, supply-chain due diligence & forced labour,
-  labelling, sales & discount rules, e-commerce / marketplace rules, duty-free & tax refund, data & AI rules.
-  REJECT: celebrities, red carpets, runway reviews, campaigns and ad films, product drops with no business angle,
-  shopping tips, events/awards/galas, obituaries, trade-show previews, job ads, opinion pieces without news,
-  small local brands with no wider lesson, pure beauty/food/hotels/tech/finance with no fashion-retail impact.
-  ALWAYS REJECT style & consumer-magazine content: "best skirt/coat/bag of the season", colour or silhouette trends,
-  what to wear, how to style, editors' picks, wish lists, gift guides, street style, celebrity looks, beauty looks,
-  trend forecasts about clothes themselves. The brief is 100% BUSINESS (money, strategy, deals, people, markets).
-  Keep every real business story (the page then shows only the 50 most important per day, so do not be stingy with
-  relevant business news - but never keep the REJECT content above).
+  The goal: about 50 business-oriented FASHION news per day. Be generous with business news.
+
+  KEEP (any brand, any segment - luxury, premium, designer, mass market, sportswear, leather goods, shoes - and
+  general industry topics): results / P&L / sales; collaborations; store openings & closures, new markets, retail
+  & e-commerce; M&A, investments, IPOs, bankruptcies; appointments (CEO, creative directors...); strategy, pricing,
+  assortment, merchandising, distribution, supply chain & sourcing; consumer & market trends with figures;
+  China, Asia, India, Middle East markets; macro, tariffs, geopolitics impacting fashion; sustainability as a
+  business topic; REGULATION impacting fashion retail & business (fast-fashion laws, customs / de minimis, EU
+  textile rules, ecodesign, EPR, green claims, due diligence, labelling, e-commerce rules, duty-free...).
+  REJECT ONLY pure style & entertainment content: red carpets and celebrity looks, "best skirt/bag of the season",
+  colour or silhouette trends, what to wear / how to style, editors' picks, wish lists, gift guides, street style,
+  beauty looks, runway reviews with no business angle, horoscopes, job ads, and news with no link to the
+  fashion / retail business at all.
   DUPLICATES: if several articles (even in different languages) cover the same story, keep ONE (the most complete)
   and set keep=false for the others.
 
   Categories: %CATS%
 
-  PRIORITY #1 = LUXURY FASHION: ready-to-wear, couture, leather goods, shoes, tailoring and knitwear of luxury and
-  designer fashion houses - above all the WATCHLIST brands below (and their groups: LVMH, Kering, Richemont, Prada
-  Group, OTB, Puig fashion...). The executive cares about FASHION, not "luxury in general":
-  luxury that is NOT fashion (hotels, real estate, wine & spirits, cars, yachts, art, pure watch or jewellery brands,
-  pure beauty/fragrance) is secondary - keep it only if it is big news, and never mark it as luxury.
-  Everything else (premium, mass market, sportswear, retail, macro) is important but secondary: rate it one notch
-  lower than an equivalent luxury-fashion story.
-
-  WATCHLIST (the executive's brands): a priority GUIDE, not a restriction. When an article is about one of these
-  brands, it must be kept (if it is business news) and rated +1 notch. Business news about OTHER fashion / leather
-  goods brands is still very welcome and is rated normally.
+  PRIORITIES (they change the SCORE, they never exclude anything):
+  - Luxury fashion (ready-to-wear, couture, leather goods, shoes, tailoring of luxury & designer houses) first.
+  - WATCHLIST brands below: a GUIDE only - if an article is about one of them, keep it and add +1 notch.
+    Other brands and general topics are just as welcome and are rated normally.
   %WATCH%
 
-  Score (importance for a luxury-fashion CEO): 5 = must know today (results of a major fashion group, big fashion M&A,
-  CEO / creative-director change at a watchlist house); 4 = important (move of a watchlist brand, or a major
-  non-luxury event); 3 = useful context; 1-2 = minor (it will not be shown).
+  Score (importance for a fashion business executive): 5 = must know today (major group results, big M&A, top
+  CEO / creative-director change); 4 = important; 3 = useful business news; 2 = minor but still business news;
+  1 = not really business news (it will not be shown).
 
   Reply ONLY with JSON: a list of objects {"id": ..., "keep": true/false, "cat": "<category>",
   "score": 1-5, "luxury": true ONLY if the story is mainly about a luxury FASHION house/group or the luxury fashion
@@ -353,7 +347,7 @@ def classify(arts, cache)
   puts "AI triage of #{todo.size} new articles (Gemini, free tier; models: #{models.first(4).join(", ")})..."
   failures = 0
   deadline = Time.now + 12 * 60 # time budget: always publish the page well before GitHub's 20-minute limit
-  todo.each_slice(40).each_with_index do |b, i| # 40 per request = fewer requests (free daily quota)
+  todo.each_slice(60).each_with_index do |b, i| # 60 per request = fewer requests (free daily quota)
     if Time.now > deadline
       warn "  ! time budget reached: the remaining articles will be triaged on the next run"
       break
@@ -412,8 +406,8 @@ def dedupe(arts, cache, models, key)
 end
 
 # ─── HTML page ───
-MIN_SCORE   = 3  # only articles rated 3+ by the AI are shown (1-2 = minor)
-PER_EDITION = 50 # each edition (7am and 6pm) adds the 50 most important NEW articles
+MIN_SCORE   = 2  # articles rated 2+ by the AI can be shown (1 = not business news)
+PER_DAY     = 50 # the 50 most important articles of EACH day (refreshed at 7am and 6pm)
 KEEP_DAYS   = 7  # articles older than 7 days disappear from the site automatically
 LUXURY = /\b(luxury|luxe|LVMH|Louis Vuitton|Dior|Kering|Gucci|Balenciaga|Saint Laurent|Herm[eè]s|Chanel|Richemont|Cartier|Prada|Miu Miu|Moncler|Armani|Burberry|Valentino|Zegna|Cucinelli|Loro Piana|Bottega|Fendi|Celine|Loewe|Tiffany|Bulgari|Rolex)\b/i
 
@@ -454,28 +448,26 @@ def eligible?(e)
   end
 end
 
-# Each run = one EDITION: the 50 most important articles published since the previous edition
-# (3 hours of overlap so nothing is missed), never an article already published before.
+# Each day (by publication date, Paris time) shows its 50 most important articles. The 7am and 6pm runs
+# refresh today's (and yesterday's) selection; older days stay as they were, for 7 days.
 def build(_days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
   cache = load_cache
-  archive = load_archive
-  published = archive.map { |e| e["id"] }
-  last = archive.map { |e| e["edition_at"] }.compact.max
-  since = last ? Time.parse(last) - 3 * 3600 : Time.now - 24 * 3600
-  now = Time.now
-  label = "#{now.hour < 12 ? 'Morning' : 'Evening'} edition · #{now.strftime('%H:%M')}"
-  fresh = arts.map { |a| entry(a, cache) }.compact
-              .reject { |e| published.include?(e["id"]) }
-              .select { |e| eligible?(e) && Time.parse(e["date"]) >= since }
-  edition = fresh.sort_by { |e| rank(e) }.first(PER_EDITION)
-                 .map { |e| e.merge("edition" => label, "edition_at" => now.iso8601) }
-  oldest = (now - KEEP_DAYS * 86_400).iso8601
-  all = (archive + edition).map { |e| e["edition_at"] ? e : e.merge("edition" => "Earlier", "edition_at" => e["date"]) }
-                           .select { |e| e["edition_at"] >= oldest }
-  # newest edition first; inside an edition, the most important first
-  all = all.group_by { |e| e["edition_at"] }.sort_by { |at, _| at }.reverse.flat_map { |_, es| es.sort_by { |e| rank(e) } }
-  puts "New edition '#{label}': #{edition.size} articles (#{fresh.size} new candidates since #{since.strftime('%a %H:%M')})."
+  archive = load_archive.map { |e| e.reject { |k, _| %w[edition edition_at].include?(k) } }
+  fresh = arts.map { |a| entry(a, cache) }.compact.select { |e| eligible?(e) }
+  touched = arts.map { |a| paris_day(a["date"]) }.uniq # the days this run can still improve
+  frozen = archive.reject { |e| touched.include?(e["day"]) }
+  # articles already shown for those days stay candidates, unless the AI dropped them (e.g. duplicate)
+  previous = archive.select { |e| touched.include?(e["day"]) }.reject do |e|
+    (c = cache[e["id"]]) && c["v"] == PROMPT_V && (!c["keep"] || c["score"].to_i < MIN_SCORE)
+  end
+  pool = fresh + previous.reject { |e| fresh.any? { |f| f["id"] == e["id"] } }
+  selected = pool.group_by { |e| e["day"] }.values.flat_map { |es| es.sort_by { |e| rank(e) }.first(PER_DAY) }
+  oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
+  all = (frozen + selected).select { |e| e["day"] >= oldest }
+  # newest day first; inside a day, the most important first
+  all = all.group_by { |e| e["day"] }.sort_by { |d, _| d }.reverse.flat_map { |_, es| es.sort_by { |e| rank(e) } }
+  puts "Per day: " + all.group_by { |e| e["day"] }.map { |d, es| "#{d}: #{es.size}" }.join(", ")
   File.write(ARCHIVE, JSON.generate(all))
   html = DATA.read.sub("__DATA__") { JSON.generate(all).gsub("</", "<\\/") }
              .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", KEEP_DAYS.to_s)
@@ -483,10 +475,10 @@ def build(_days)
              .sub("__CATS__") { JSON.generate(CATEGORIES) }
   FileUtils.mkdir_p(File.dirname(OUT))
   File.write(OUT, html)
-  puts "Done: #{all.size} articles on the site (#{all.map { |e| e['edition_at'] }.uniq.size} editions) -> #{OUT}"
+  puts "Done: #{all.size} articles on the site -> #{OUT}"
 end
 
-days = (ARGV.index("--days") ? ARGV[ARGV.index("--days") + 1].to_i : 2)
+days = (ARGV.index("--days") ? ARGV[ARGV.index("--days") + 1].to_i : WINDOW_DAYS)
 case ARGV.first
 when "build" then build(days)
 else
@@ -546,7 +538,7 @@ input{flex:1;min-width:180px}
 <div id="list"></div></main></div>
 <script>
 const A=__DATA__, CATS=__CATS__, GEN=new Date("__GEN__"); let fc=null, fs=null;
-document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · 50 new articles at 7am & 6pm · last __DAYS__ days';
+document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · top 50 per day · updated 7am & 6pm · last __DAYS__ days';
 let read={}; try{read=JSON.parse(localStorage.getItem('brief_read')||'{}')}catch(e){}
 const $=s=>document.querySelector(s), esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.cat:a.source)===v).length;
