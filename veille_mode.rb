@@ -25,9 +25,11 @@ ARTS  = File.join(HERE, "veille_articles.json")
 ARCHIVE = File.join(HERE, "veille_archive.json") # the articles shown on the site (7 days x 50/day)
 # Normal runs look at today + yesterday. While the site is not complete (less than 5 days, or some articles
 # not yet sorted by the AI, e.g. after a Gemini outage), look back 7 days so the gaps get filled.
+# (Also when the AI rules changed: the whole week is then re-sorted with the new rules.)
+PROMPT_V = 10 # bump when the triage rules change, so cached articles are re-triaged
 WINDOW_DAYS = begin
   shown = JSON.parse(File.read(ARCHIVE))
-  shown.map { |e| e["day"] }.uniq.size < 5 || shown.any? { |e| e["by"] != "ai" } ? 7 : 2
+  shown.map { |e| e["day"] }.uniq.size < 5 || shown.any? { |e| e["by"] != "ai" || e["v"] != PROMPT_V } ? 7 : 2
 rescue StandardError
   7
 end
@@ -47,8 +49,17 @@ SOURCES = [
   ["WSJ",             gnews("site:wsj.com (fashion OR luxury OR apparel OR retailer) when:2d")],
   ["WWD",             "https://wwd.com/business-news/feed/"],
   ["WWD",             "https://wwd.com/feed/"],
+  # FashionNetwork = the reference: several searches (each returns up to 100 articles) to get as many as possible
   ["FashionNetwork",  gnews("site:fashionnetwork.com when:2d", "fr")],
   ["FashionNetwork",  gnews("site:fashionnetwork.com when:2d")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (luxe OR luxury OR maroquinerie OR \"leather goods\") when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (résultats OR \"chiffre d'affaires\" OR ventes OR results OR sales OR revenue) when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (nomme OR nommée OR appoints OR CEO OR \"directeur artistique\" OR \"creative director\") when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (magasin OR boutique OR store OR flagship OR ouvre OR opens OR retail) when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (rachat OR acquisition OR acquiert OR investit OR investment OR IPO OR fusion) when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (collaboration OR collab OR capsule OR partenariat OR partnership) when:2d", "fr")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (Chine OR China OR Asie OR Asia OR Inde OR India OR \"Moyen-Orient\" OR Dubai) when:2d")],
+  ["FashionNetwork",  gnews("site:fashionnetwork.com (sneakers OR sportswear OR denim OR \"prêt-à-porter\" OR ready-to-wear) when:2d")],
   ["Jing Daily",      gnews("site:jingdaily.com when:2d")],
   ["Journal du Luxe", gnews("site:journalduluxe.fr when:2d", "fr")],
   ["Drapers",         gnews("site:drapersonline.com when:2d")],
@@ -62,7 +73,15 @@ SOURCES = [
 ]
 
 CATEGORIES = ["Earnings & P&L", "Collaborations", "Store openings & retail", "M&A & investment",
-              "Appointments", "China & Asia", "Regulation & policy", "Macro & geopolitics", "Strategy & product"]
+              "Appointments", "Regulation & policy", "Macro & geopolitics", "Strategy & product"]
+ZONES = ["Europe", "China & Asia", "Middle East", "US", "Global"]
+# Without AI: zone guessed from words in the headline.
+ZONE_RX = {
+  "China & Asia" => /\b(China|Chinese|Shanghai|Beijing|Hong Kong|Asia|Asian|Japan|Tokyo|Korea|Seoul|India|Singapore|Chine|Asie|Japon|Corée|Inde)\b/i,
+  "Middle East" => /\b(Middle East|Dubai|UAE|Saudi|Riyadh|Qatar|Doha|Abu Dhabi|Gulf|Moyen-Orient|Arabie)\b/i,
+  "US" => /\b(US|U\.S\.|America|American|New York|Los Angeles|Etats-Unis|États-Unis|américain\w*)\b/,
+  "Europe" => /\b(Europe|European|EU|France|French|Paris|Italy|Italian|Milan|UK|Britain|British|London|Germany|German|Spain|Spanish|Fran[cç]ais|Italie|Allemagne|Espagne|Royaume-Uni)\b/,
+}
 
 TRADE = ["WWD", "Drapers", "FashionUnited", "FashionNetwork", "Vogue Business", "Jing Daily",
          "Journal du Luxe", "The Good Goods", "The Bold Way"]
@@ -72,11 +91,10 @@ KEYWORDS = {
   "Store openings & retail" => /\b(opens?|opening|flagship|stores?|boutiques?|pop-up|ouvre|ouverture|magasins?|points? de vente)\b/i,
   "M&A & investment" => /\b(acqui\w+|merger|stake|takeover|buys?|investment|IPO|rachat|rachète|cession|fusion|levée)\b/i,
   "Appointments" => /\b(appoint\w*|names?|CEO|chief executive|creative director|steps down|nomm\w+|directeur|directrice)\b/i,
-  "China & Asia" => /\b(China|Chinese|Shanghai|Hong Kong|Asia|Japan|Korea|Chine|Asie|Japon|Corée)\b/i,
   "Regulation & policy" => /\b(regulation|regulator|directive|law|bill|ban|ecodesign|greenwashing|de minimis|customs|duty|due diligence|EPR|r[ée]glementation|loi|directive|interdiction|douane|éco-conception)\b/i,
   "Macro & geopolitics" => /\b(tariffs?|trade war|inflation|consumer confidence|recession|currency|droits de douane)\b/i,
 }
-FASHION = /(fashion|luxury|apparel|retail|brand|LVMH|Kering|Hermès|Chanel|Prada|Gucci|Inditex|Zara|H&M|Nike|Adidas|Richemont|Tapestry|mode|luxe|prêt-à-porter|habillement|textile|maroquinerie|sneaker|beauty|beauté|department store)/i
+FASHION = /(fashion|luxury|apparel|retail|brand|LVMH|Kering|Hermès|Chanel|Prada|Gucci|Inditex|Zara|H&M|Nike|Adidas|Richemont|Tapestry|mode|luxe|prêt-à-porter|habillement|textile|maroquinerie|sneaker|department store)/i
 
 # Media accepted from the brand & regulation searches (recognised business / fashion / news media).
 TRUSTED = /\A(WWD|Vogue Business|Vogue|Business of Fashion|The Business of Fashion|FashionNetwork|FashionUnited|Drapers|Jing Daily|Journal du Luxe|Les Échos|Financial Times|Bloomberg|WSJ|Reuters|AFP|Associated Press|AP News|CNBC|Forbes|Fortune|Business Insider|Insider|The New York Times|New York Times|Washington Post|The Guardian|The Times|The Telegraph|Evening Standard|BBC|The Economist|Harper's BAZAAR|Harper's Bazaar|ELLE|Elle|Grazia|L'Officiel|Hypebeast|Highsnobiety|Glossy|Modern Retail|Retail Dive|Retail Gazette|Retail Week|Luxury Daily|Le Monde|Le Figaro|Madame Figaro|Le Parisien|Libération|L'Express|Le Point|Challenges|Capital|BFM|BFMTV|La Tribune|L'Opinion|Les Echos Week-End|Il Sole 24 Ore|Corriere della Sera|MF Fashion|Pambianco|Handelsblatt|Süddeutsche Zeitung|El País|Expansión|South China Morning Post|SCMP|Nikkei Asia|Nikkei|Caixin|Hindustan Times|The Times of India|Times of India|The Economic Times|Economic Times|Mint|Livemint|Business Standard|The Hindu|Vogue India|Arabian Business|The National|Gulf News|Yahoo Finance|MarketWatch|Barron's|Axios|Semafor|Politico|Euronews|Fashion Dive)\z/i
@@ -133,7 +151,7 @@ def fetch(name, url)
     end
     origin = name == BRAND_FEED ? "brands" : name == REG_FEED ? "regulation" : "media"
     items << { "source" => source, "title" => title, "link" => link, "origin" => origin,
-               "date" => parse_date(d && d.text).iso8601, "summary" => gn ? "" : clean(ds && ds.text)[0, 400] }
+               "date" => parse_date(d && d.text).iso8601, "summary" => gn ? "" : clean(ds && ds.text)[0, 800] }
   end
   items
 rescue StandardError => e
@@ -212,24 +230,29 @@ WATCHLIST = {
 WATCH_RX = /\b(Louis Vuitton|Dior|Chanel|Herm[eè]s|Gucci|Saint Laurent|Bottega Veneta|Prada|Miu Miu|Fendi|Loewe|Balenciaga|Givenchy|Burberry|Armani|Versace|Valentino|Dolce|Ferragamo|Moncler|Margiela|McQueen|Goyard|Moynat|Loro Piana|Cucinelli|Berluti|Stefano Ricci|Charvet|Delvaux|Valextra|John Lobb|Corthay|Schiaparelli|Zegna|Brioni|Kiton|Attolini|Serapian|Lardini|Gaultier|Ala[iï]a|Courr[eè]ges|Pringle of Scotland|Smythson|Ralph Lauren|Tom Ford|Oscar de la Renta|Carolina Herrera|Khaite|Fear of God|Thom Browne|Proenza Schouler|Rick Owens|Chrome Hearts|Brandon Maxwell|Gabriela Hearst|Sabyasachi|Rahul Mishra|Anita Dongre|Tahiliani|Gaurav Gupta|Raw Mango|Abu Jani|Falguni|Anamika Khanna|Ritu Kumar|Payal Singhal|NorBlack|Shang Xia|Guo Pei|Shiatzy Chen|Uma Wang|Robert Wun|Feng Chen Wang|Sankuanz|Huishan Zhang|Ziggy Chen|Kenzo|Jacquemus|Dries Van Noten|Sacai|Issey Miyake|Acne Studios|Songmont|Marge Sherwood|Mansur Gavriel|LVMH|Kering|Richemont)\b/i
 
 # ─── AI triage ───
-PROMPT_V = 9 # bump when the triage rules change, so cached articles are re-triaged
 PROMPT = <<~P
   You are the press-monitoring assistant of a fashion / luxury / retail executive (VP / CEO) with a merchandising mindset.
   For each article (headline + optional summary, in English or French), decide whether it belongs in their business news brief.
 
-  The goal: about 50 business-oriented FASHION news per day. Be generous with business news.
+  The goal: about 100 business-oriented FASHION news per day. Be generous with fashion business news.
 
-  KEEP (any brand, any segment - luxury, premium, designer, mass market, sportswear, leather goods, shoes - and
-  general industry topics): results / P&L / sales; collaborations; store openings & closures, new markets, retail
-  & e-commerce; M&A, investments, IPOs, bankruptcies; appointments (CEO, creative directors...); strategy, pricing,
-  assortment, merchandising, distribution, supply chain & sourcing; consumer & market trends with figures;
-  China, Asia, India, Middle East markets; macro, tariffs, geopolitics impacting fashion; sustainability as a
-  business topic; REGULATION impacting fashion retail & business (fast-fashion laws, customs / de minimis, EU
-  textile rules, ecodesign, EPR, green claims, due diligence, labelling, e-commerce rules, duty-free...).
-  REJECT ONLY pure style & entertainment content: red carpets and celebrity looks, "best skirt/bag of the season",
+  SCOPE = FASHION ONLY: ready-to-wear, couture, leather goods & bags, shoes, fashion accessories, menswear &
+  tailoring, knitwear, denim, sportswear & outdoor APPAREL, fashion retail & e-commerce, department stores,
+  textile, sourcing & manufacturing for fashion. Fashion groups (LVMH, Kering, Inditex, H&M...) count when the
+  news concerns the group or its fashion business.
+  OUT OF SCOPE (reject): jewellery, watches, beauty, cosmetics, fragrance, eyewear-only tech, hotels, food,
+  wine & spirits, cars, real estate, art, general finance or tech - UNLESS the article is about a collaboration
+  with a fashion brand or the fashion business of a fashion house (e.g. a fashion house's results).
+
+  KEEP (any fashion brand, any segment, and general fashion-industry topics): results / P&L / sales;
+  collaborations; store openings & closures, new markets, retail & e-commerce; M&A, investments, IPOs,
+  bankruptcies; appointments (CEO, creative directors...); strategy, pricing, assortment, merchandising,
+  distribution, supply chain & sourcing; consumer & market trends with figures; macro, tariffs, geopolitics
+  impacting fashion; sustainability as a business topic; REGULATION impacting fashion retail & business
+  (fast-fashion laws, customs / de minimis, EU textile rules, ecodesign, EPR, green claims, due diligence...).
+  REJECT also pure style & entertainment content: red carpets and celebrity looks, "best skirt/bag of the season",
   colour or silhouette trends, what to wear / how to style, editors' picks, wish lists, gift guides, street style,
-  beauty looks, runway reviews with no business angle, horoscopes, job ads, and news with no link to the
-  fashion / retail business at all.
+  runway reviews with no business angle, horoscopes, job ads.
   DUPLICATES: if several articles (even in different languages) cover the same story, keep ONE (the most complete)
   and set keep=false for the others.
 
@@ -250,15 +273,19 @@ PROMPT = <<~P
   market (false for non-fashion luxury, premium/accessible brands such as Lacoste, Coach, Canada Goose, Hugo Boss,
   Pandora, general retail/department stores and macro news),
   "watch": true if the story is about a WATCHLIST brand (or its group, when the news concerns its fashion business),
+  "zone": "Europe" | "China & Asia" | "Middle East" | "US" | "Global" (the main market concerned; "Global" if
+  several or none; Asia includes Japan, Korea, India, South-East Asia),
   "title_en": "<headline in natural English; translate if it is in French>",
-  "angle": "<in English, 1 sentence, max 20 words: why it matters for the business / merchandising>"}.
+  "summary": "<in English, exactly 2 concise sentences recapping the article with the key figures and facts
+  (sales, %, amounts, who, where, when). Use ONLY facts present in the headline and text given - NEVER invent a
+  number or a detail. If only the headline is given, write 2 short factual sentences without any new figure.>"}.
   For keep=false, just return {"id": ..., "keep": false}.
 
   Articles:
 P
 
 def line(a)
-  "id=#{a['id']} | #{a['source']} | #{a['title']}#{a['summary'].empty? ? '' : ' | ' + a['summary'][0, 160]}"
+  "id=#{a['id']} | #{a['source']} | #{a['title']}#{a['summary'].empty? ? '' : ' | TEXT: ' + a['summary'][0, 500]}"
 end
 
 # ─── AI: Google Gemini, free tier ───
@@ -352,7 +379,7 @@ def classify(arts, cache)
   puts "AI triage of #{todo.size} new articles (Gemini, free tier; models: #{models.first(4).join(", ")})..."
   failures = 0
   deadline = Time.now + 12 * 60 # time budget: always publish the page well before GitHub's 20-minute limit
-  todo.each_slice(60).each_with_index do |b, i| # 60 per request = fewer requests (free daily quota)
+  todo.each_slice(30).each_with_index do |b, i| # 30 per request (each answer now includes a 2-sentence summary)
     if Time.now > deadline
       warn "  ! time budget reached: the remaining articles will be triaged on the next run"
       break
@@ -411,8 +438,9 @@ def dedupe(arts, cache, models, key)
 end
 
 # ─── HTML page ───
-MIN_SCORE   = 2  # articles rated 2+ by the AI can be shown (1 = not business news)
-PER_DAY     = 50 # the 50 most important articles of EACH day (refreshed at 7am and 6pm)
+MIN_SCORE   = 2   # articles rated 2+ by the AI can be shown (1 = not business news)
+PER_RUN     = 50  # each update (7am and 6pm) adds the 50 most important NEW articles
+PER_DAY     = 100 # so up to 100 articles per day (50 + 50)
 KEEP_DAYS   = 7  # articles older than 7 days disappear from the site automatically
 LUXURY = /\b(luxury|luxe|LVMH|Louis Vuitton|Dior|Kering|Gucci|Balenciaga|Saint Laurent|Herm[eè]s|Chanel|Richemont|Cartier|Prada|Miu Miu|Moncler|Armani|Burberry|Valentino|Zegna|Cucinelli|Loro Piana|Bottega|Fendi|Celine|Loewe|Tiffany|Bulgari|Rolex)\b/i
 
@@ -433,15 +461,22 @@ def entry(a, cache)
   { "id" => a["id"], "source" => a["source"], "link" => a["link"], "date" => a["date"], "day" => paris_day(a["date"]),
     "title" => title, "original" => (title == a["title"] ? "" : a["title"]),
     "cat" => (CATEGORIES.include?(c["cat"]) ? c["cat"] : "Strategy & product"),
-    "score" => (c["score"] || 2).to_i.clamp(1, 5), "angle" => c["angle"].to_s,
-    "by" => c["by"] == "ai" ? "ai" : "kw", "origin" => a["origin"] || "media",
+    "score" => (c["score"] || 2).to_i.clamp(1, 5), "summary" => c["summary"].to_s,
+    "zone" => ZONES.include?(c["zone"]) ? c["zone"] : guess_zone("#{a['title']} #{a['summary']}"),
+    "by" => c["by"] == "ai" ? "ai" : "kw", "v" => c["v"], "origin" => a["origin"] || "media",
     "luxury" => c["luxury"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)),
     "watch" => c["watch"] == true || (c["by"] != "ai" && !!("#{a['title']} #{a['summary']}" =~ WATCH_RX)) }
 end
 
+def guess_zone(text)
+  ZONE_RX.each { |zone, rx| return zone if text =~ rx }
+  "Global"
+end
+
 def rank(e)
-  # highest score first, AI-rated before keyword-only, luxury first on equal score, then the most recent
-  [-e["score"], e["by"] == "ai" ? 0 : 1, e["watch"] ? 0 : 1, e["luxury"] ? 0 : 1, -Time.parse(e["date"]).to_i]
+  # highest score first, AI-rated before keyword-only, my brands, luxury, FashionNetwork, then the most recent
+  [-e["score"], e["by"] == "ai" ? 0 : 1, e["watch"] ? 0 : 1, e["luxury"] ? 0 : 1,
+   e["source"] == "FashionNetwork" ? 0 : 1, -Time.parse(e["date"]).to_i]
 end
 
 # Articles from the extra searches only count when they match their purpose.
@@ -453,23 +488,36 @@ def eligible?(e)
   end
 end
 
-# Each day (by publication date, Paris time) shows its 50 most important articles. The 7am and 6pm runs
-# refresh today's (and yesterday's) selection; older days stay as they were, for 7 days.
+# Each update (7am, 6pm) ADDS the 50 most important new articles (max 100 per day, by publication date,
+# Paris time). Articles already on the site stay, unless the AI drops them (duplicate, out of scope).
+# While the site is filling up (7-day window), there is no 50 limit so the past days get filled at once.
 def build(_days)
   arts = File.exist?(ARTS) ? JSON.parse(File.read(ARTS)) : []
   cache = load_cache
   archive = load_archive.map { |e| e.reject { |k, _| %w[edition edition_at].include?(k) } }
   fresh = arts.map { |a| entry(a, cache) }.compact.select { |e| eligible?(e) }
-  touched = arts.map { |a| paris_day(a["date"]) }.uniq # the days this run can still improve
+  fresh_by_id = fresh.map { |e| [e["id"], e] }.to_h
+  arts_ids = arts.map { |a| a["id"] }
+  touched = arts.map { |a| paris_day(a["date"]) }.uniq # the days this run can still complete
   frozen = archive.reject { |e| touched.include?(e["day"]) }
-  # articles already shown for those days stay candidates, unless the AI dropped them (e.g. duplicate)
   previous = archive.select { |e| touched.include?(e["day"]) }.reject do |e|
-    (c = cache[e["id"]]) && c["v"] == PROMPT_V && (!c["keep"] || c["score"].to_i < MIN_SCORE)
+    (c = cache[e["id"]]) && c["v"] == PROMPT_V &&
+      (!c["keep"] || c["score"].to_i < MIN_SCORE || (arts_ids.include?(e["id"]) && !fresh_by_id[e["id"]]))
+  end.map { |e| fresh_by_id[e["id"]] || e } # refreshed with the latest AI summary / zone
+  shown = previous.map { |e| e["id"] }
+  per_day = Hash.new(0)
+  previous.each { |e| per_day[e["day"]] += 1 }
+  limit = WINDOW_DAYS == 7 ? Float::INFINITY : PER_RUN
+  added = []
+  fresh.reject { |e| shown.include?(e["id"]) }.sort_by { |e| rank(e) }.each do |e|
+    break if added.size >= limit
+    next if per_day[e["day"]] >= PER_DAY
+    added << e
+    per_day[e["day"]] += 1
   end
-  pool = fresh + previous.reject { |e| fresh.any? { |f| f["id"] == e["id"] } }
-  selected = pool.group_by { |e| e["day"] }.values.flat_map { |es| es.sort_by { |e| rank(e) }.first(PER_DAY) }
+  puts "This update adds #{added.size} new articles."
   oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
-  all = (frozen + selected).select { |e| e["day"] >= oldest }
+  all = (frozen + previous + added).select { |e| e["day"] >= oldest }
   # newest day first; inside a day, the most important first
   all = all.group_by { |e| e["day"] }.sort_by { |d, _| d }.reverse.flat_map { |_, es| es.sort_by { |e| rank(e) } }
   puts "Per day: " + all.group_by { |e| e["day"] }.map { |d, es| "#{d}: #{es.size}" }.join(", ")
@@ -477,7 +525,7 @@ def build(_days)
   html = DATA.read.sub("__DATA__") { JSON.generate(all).gsub("</", "<\\/") }
              .sub("__GEN__", Time.now.utc.iso8601).sub("__DAYS__", KEEP_DAYS.to_s)
              .sub("__TODAY__", Time.now.strftime("%Y-%m-%d"))
-             .sub("__CATS__") { JSON.generate(CATEGORIES) }
+             .sub("__CATS__") { JSON.generate(CATEGORIES) }.sub("__ZONES__") { JSON.generate(ZONES) }
   FileUtils.mkdir_p(File.dirname(OUT))
   File.write(OUT, html)
   puts "Done: #{all.size} articles on the site -> #{OUT}"
@@ -503,68 +551,125 @@ __END__
 @media (prefers-color-scheme:dark){:root{--bg:#141414;--panel:#1c1c1c;--ink:#ecebe8;--muted:#9a968f;--line:#2c2c2c;--accent:#d2b47a;--hi:#2a2519}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 Inter,system-ui,sans-serif}
 a{color:inherit;text-decoration:none}
-.app{display:grid;grid-template-columns:250px 1fr;min-height:100vh}
+button{font:inherit;color:inherit}
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
 aside{border-right:1px solid var(--line);padding:22px 16px;position:sticky;top:0;height:100vh;overflow:auto;background:var(--panel)}
 h1{font:600 22px "Playfair Display",serif;margin:0 0 2px}
-.gen{color:var(--muted);font-size:12px;margin-bottom:18px}
-.grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 6px}
-.f{display:flex;justify-content:space-between;width:100%;border:0;background:none;color:var(--ink);font:inherit;
-   padding:6px 8px;border-radius:6px;cursor:pointer;text-align:left}
-.f:hover{background:var(--bg)}.f.on{background:var(--hi);color:var(--accent);font-weight:600}
-.f span{color:var(--muted);font-size:12px}
-main{padding:22px 32px;max-width:900px}
-.bar{display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.gen{color:var(--muted);font-size:12px;margin-bottom:14px}
+.grp{display:flex;justify-content:space-between;align-items:baseline;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:18px 0 6px}
+.grp button{border:0;background:none;color:var(--accent);font-size:11px;cursor:pointer;text-transform:none;letter-spacing:0}
+.f{display:flex;align-items:center;gap:8px;width:100%;border:0;background:none;padding:5px 8px;border-radius:6px;cursor:pointer;text-align:left}
+.f:hover{background:var(--bg)}
+.f .box{width:14px;height:14px;border:1.5px solid var(--muted);border-radius:3px;flex:none;display:grid;place-items:center;font-size:10px;line-height:1}
+.f.on{background:var(--hi);color:var(--accent);font-weight:600}.f.on .box{background:var(--accent);border-color:var(--accent);color:var(--panel)}
+.f .lbl{flex:1}.f .n{color:var(--muted);font-size:12px;font-weight:400}
+.clear{margin-top:16px;width:100%;padding:8px;border:1px solid var(--line);border-radius:8px;background:none;cursor:pointer;color:var(--muted)}
+main{padding:22px 32px;max-width:920px}
+.tabs{display:flex;gap:6px;margin-bottom:14px}
+.tab{border:1px solid var(--line);background:var(--panel);padding:7px 16px;border-radius:20px;cursor:pointer;font-weight:500}
+.tab.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.bar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
 input,select{font:inherit;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)}
 input{flex:1;min-width:180px}
+.active{font-size:12px;color:var(--muted);margin-bottom:6px}
 .day{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:22px 0 4px}
-.it{display:block;padding:14px 4px;border-bottom:1px solid var(--line)}
-.it:hover .t{color:var(--accent)}
-.it.read{opacity:.5}
+.it{display:flex;gap:12px;padding:14px 4px;border-bottom:1px solid var(--line)}
+.it .body{flex:1;min-width:0}
+.it.read .body{opacity:.55}
+.it a:hover .t{color:var(--accent)}
 .meta{font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .src{font-weight:600;color:var(--ink)}
 .tag{background:var(--hi);color:var(--accent);padding:1px 8px;border-radius:20px;font-size:11px}
+.zone{border:1px solid var(--line);padding:0 8px;border-radius:20px;font-size:11px}
 .lux{background:var(--accent);color:var(--panel);padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}
-.t{font-weight:600;font-size:16px;margin:3px 0}
-.a{color:var(--muted);font-size:13.5px}
-.dots{color:var(--accent);letter-spacing:1px}
+.t{font-weight:600;font-size:16px;margin:4px 0}
+.s{color:var(--muted);font-size:13.5px}
+.save{flex:none;align-self:flex-start;border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:12px;white-space:nowrap}
+.save.on{background:var(--accent);border-color:var(--accent);color:var(--panel)}
 .empty{color:var(--muted);padding:40px 0}
+.note{font-size:12px;color:var(--muted);margin:4px 0 10px}
 .menu{display:none}
 @media (max-width:760px){.app{grid-template-columns:1fr}aside{position:static;height:auto;display:none}aside.open{display:block}
  main{padding:16px}.menu{display:inline-block}}
 </style></head><body>
 <div class="app">
 <aside id="side"><h1>Fashion Brief</h1><div class="gen" id="gen"></div>
-<div class="grp">Topics</div><div id="cats"></div><div class="grp">Media</div><div id="srcs"></div></aside>
+<div class="grp">Topics<button data-clear="cats">clear</button></div><div id="cats"></div>
+<div class="grp">Zones<button data-clear="zones">clear</button></div><div id="zones"></div>
+<div class="grp">Media<button data-clear="srcs">clear</button></div><div id="srcs"></div>
+<button class="clear" id="clearall">Clear all filters</button></aside>
 <main>
-<div class="bar"><button class="f menu" onclick="side.classList.toggle('open')">☰ Filters</button>
+<div class="tabs"><button class="tab" data-view="feed">Feed</button><button class="tab" data-view="saved">Saved <span id="nsaved"></span></button>
+<button class="tab menu" onclick="side.classList.toggle('open')">☰ Filters</button></div>
+<div class="bar">
 <input id="q" placeholder="Search (brand, country, group…)">
 <select id="sort"><option value="date">Latest</option><option value="score">Most important</option></select>
-<select id="imp"><option value="1">All (7 days)</option><option value="today">Today only</option><option value="watch">My brands</option><option value="lux">Luxury fashion</option><option value="4">Must-read (★4+)</option></select></div>
+<select id="imp"><option value="all">All</option><option value="today">Today only</option><option value="watch">My brands</option><option value="lux">Luxury fashion</option></select></div>
+<div class="active" id="active"></div>
 <div id="list"></div></main></div>
 <script>
-const A=__DATA__, CATS=__CATS__, GEN=new Date("__GEN__"); let fc=null, fs=null;
-document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+' · top 50 per day · updated 7am & 6pm · last __DAYS__ days';
-let read={}; try{read=JSON.parse(localStorage.getItem('brief_read')||'{}')}catch(e){}
-const $=s=>document.querySelector(s), esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-function btns(el,vals,cur,set){const n=v=>A.filter(a=>v===null||(el==='cats'?a.cat:a.source)===v).length;
- $('#'+el).innerHTML=[null,...vals].map(v=>`<button class="f ${v===cur?'on':''}" data-v="${v??''}">${v??'All'}<span>${n(v)}</span></button>`).join('');
- $('#'+el).querySelectorAll('button').forEach(b=>b.onclick=()=>{set(b.dataset.v||null);draw()});}
-function draw(){
- btns('cats',CATS.filter(c=>A.some(a=>a.cat===c)),fc,v=>fc=v);
- btns('srcs',[...new Set(A.map(a=>a.source))].sort(),fs,v=>fs=v);
- const q=$("#q").value.toLowerCase(), imp=$("#imp").value, min=(imp==="lux"||imp==="today"||imp==="watch")?1:+imp, TODAY="__TODAY__";
- let L=A.filter(a=>(!fc||a.cat===fc)&&(!fs||a.source===fs)&&a.score>=min&&(imp!=="lux"||a.luxury)&&(imp!=="watch"||a.watch)&&(imp!=="today"||a.day===TODAY)&&(!q||(a.title+a.original+a.angle+a.source).toLowerCase().includes(q)));
- if($('#sort').value==='score')L.sort((x,y)=>y.score-x.score||y.date.localeCompare(x.date));
- let h='',last='';
- for(const a of L){const d=new Date(a.date), ed=new Date(a.edition_at||a.date), day=ed.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'})+(a.edition?' · '+a.edition:'');
-  if($('#sort').value==='date'&&day!==last){h+=`<div class="day">${esc(day)}</div>`;last=day}
-  h+=`<a class="it ${read[a.id]?'read':''}" href="${esc(a.link)}" target="_blank" rel="noopener" data-id="${a.id}"${a.original?` title="Original: ${esc(a.original)}"`:''}>
-  <div class="meta"><span class="src">${esc(a.source)}</span><span>${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}</span>
-  ${a.watch?`<span class="lux">My brand</span>`:a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span><span class="dots">${'★'.repeat(a.score)}</span></div>
-  <div class="t">${esc(a.title)}</div>${a.angle?`<div class="a">→ ${esc(a.angle)}</div>`:''}</a>`}
- $('#list').innerHTML=h||'<div class="empty">No articles match these filters.</div>';
- document.querySelectorAll('.it').forEach(e=>e.onclick=()=>{read[e.dataset.id]=1;e.classList.add('read');
-  try{localStorage.setItem('brief_read',JSON.stringify(read))}catch(_){}});
+const A=__DATA__, CATS=__CATS__, ZONES=__ZONES__, GEN=new Date("__GEN__"), TODAY="__TODAY__";
+document.getElementById('gen').textContent='Updated '+GEN.toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',timeZone:'Europe/Paris'})+' (Paris)'+' · 50 new articles at 7am & 6pm · last __DAYS__ days';
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const safeLink=u=>/^https?:\/\//i.test(u||'')?u:'#';
+// --- saved preferences (this browser only) ---
+const load=(k,d)=>{try{const v=JSON.parse(localStorage.getItem(k));return v??d}catch(e){return d}};
+const store=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+let P=Object.assign({view:'feed',cats:[],zones:[],srcs:[],sort:'date',imp:'all'},load('brief_prefs',{}));
+let READ=load('brief_read',{}), SAVED=load('brief_saved',{});
+const savePrefs=()=>store('brief_prefs',P);
+const field={cats:'cat',zones:'zone',srcs:'source'};
+function base(){return P.view==='saved'?Object.values(SAVED).sort((x,y)=>(y.savedAt||'').localeCompare(x.savedAt||'')):A}
+function match(a,skip){ // skip = the group being counted, so counts show what each choice would add
+ for(const g of ['cats','zones','srcs']){ if(g===skip)continue; if(P[g].length&&!P[g].includes(a[field[g]]))return false }
+ const q=$('#q').value.toLowerCase();
+ if(q&&!((a.title||'')+(a.original||'')+(a.summary||a.angle||'')+(a.source||'')).toLowerCase().includes(q))return false;
+ if(P.imp==='today'&&a.day!==TODAY)return false;
+ if(P.imp==='watch'&&!a.watch)return false;
+ if(P.imp==='lux'&&!a.luxury)return false;
+ return true}
+function group(el,vals){
+ const B=base(), n=v=>B.filter(a=>match(a,el)&&a[field[el]]===v).length;
+ $('#'+el).innerHTML=vals.map(v=>`<button class="f ${P[el].includes(v)?'on':''}" data-g="${el}" data-v="${esc(v)}"><span class="box">${P[el].includes(v)?'✓':''}</span><span class="lbl">${esc(v)}</span><span class="n">${n(v)}</span></button>`).join('');
 }
-['q','sort','imp'].forEach(i=>$('#'+i).oninput=draw);draw();
+function draw(){
+ document.querySelectorAll('.tab[data-view]').forEach(t=>t.classList.toggle('on',t.dataset.view===P.view));
+ $('#nsaved').textContent='('+Object.keys(SAVED).length+')';
+ $('#sort').value=P.sort; $('#imp').value=P.imp;
+ const B=base();
+ group('cats',CATS.filter(c=>B.some(a=>a.cat===c)||P.cats.includes(c)));
+ group('zones',ZONES.filter(z=>B.some(a=>a.zone===z)||P.zones.includes(z)));
+ group('srcs',[...new Set(B.map(a=>a.source))].concat(P.srcs).filter((v,i,s)=>v&&s.indexOf(v)===i).sort());
+ const sel=[...P.cats,...P.zones,...P.srcs];
+ $('#active').textContent=sel.length?'Filters: '+sel.join(' + '):'';
+ let L=B.filter(a=>match(a,null));
+ L=[...L].sort(P.sort==='score'
+   ?(x,y)=>(y.score||0)-(x.score||0)||(y.date||'').localeCompare(x.date||'')
+   :(x,y)=>(y.day||'').localeCompare(x.day||'')||(y.date||'').localeCompare(x.date||''));
+ let h=P.view==='saved'?'<div class="note">Saved articles are kept on this device and never expire. Click "Saved" again to remove one.</div>':'', last='';
+ for(const a of L){const d=new Date(a.date), day=new Date((a.day||a.date.slice(0,10))+'T12:00:00Z').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long',timeZone:'UTC'});
+  if(P.sort==='date'&&day!==last){h+=`<div class="day">${esc(day)}</div>`;last=day}
+  const sv=!!SAVED[a.id];
+  h+=`<div class="it ${READ[a.id]?'read':''}"><div class="body">
+  <div class="meta"><span class="src">${esc(a.source)}</span><span>${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',timeZone:'Europe/Paris'})}</span>
+  ${a.watch?`<span class="lux">My brand</span>`:a.luxury?`<span class="lux">Luxury</span>`:``}<span class="tag">${esc(a.cat)}</span>${a.zone?`<span class="zone">${esc(a.zone)}</span>`:''}</div>
+  <a href="${esc(safeLink(a.link))}" target="_blank" rel="noopener noreferrer" data-id="${esc(a.id)}"${a.original?` title="Original: ${esc(a.original)}"`:''}><div class="t">${esc(a.title)}</div></a>
+  ${(a.summary||a.angle)?`<div class="s">${esc(a.summary||a.angle)}</div>`:''}</div>
+  <button class="save ${sv?'on':''}" data-save="${esc(a.id)}">${sv?'★ Saved':'☆ Save'}</button></div>`}
+ $('#list').innerHTML=h+(L.length?'':`<div class="empty">${P.view==='saved'?'No saved article yet. Click "☆ Save" on an article to keep it here.':'No articles match these filters.'}</div>`);
+}
+document.addEventListener('click',e=>{
+ const f=e.target.closest('.f[data-g]'); if(f){const g=f.dataset.g,v=f.dataset.v; P[g]=P[g].includes(v)?P[g].filter(x=>x!==v):[...P[g],v]; savePrefs(); draw(); return}
+ const c=e.target.closest('[data-clear]'); if(c){P[c.dataset.clear]=[]; savePrefs(); draw(); return}
+ if(e.target.closest('#clearall')){P.cats=[];P.zones=[];P.srcs=[];P.imp='all';$('#q').value=''; savePrefs(); draw(); return}
+ const t=e.target.closest('.tab[data-view]'); if(t){P.view=t.dataset.view; savePrefs(); draw(); return}
+ const s=e.target.closest('[data-save]'); if(s){const id=s.dataset.save;
+  if(SAVED[id])delete SAVED[id]; else {const a=A.find(x=>x.id===id)||SAVED[id]; if(a)SAVED[id]=Object.assign({},a,{savedAt:new Date().toISOString()})}
+  store('brief_saved',SAVED); draw(); return}
+ const l=e.target.closest('a[data-id]'); if(l){READ[l.dataset.id]=1; store('brief_read',READ); l.closest('.it').classList.add('read')}
+});
+$('#q').oninput=draw;
+$('#sort').onchange=()=>{P.sort=$('#sort').value; savePrefs(); draw()};
+$('#imp').onchange=()=>{P.imp=$('#imp').value; savePrefs(); draw()};
+draw();
 </script></body></html>
