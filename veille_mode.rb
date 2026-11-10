@@ -94,6 +94,15 @@ KEYWORDS = {
   "Regulation & policy" => /\b(regulation|regulator|directive|law|bill|ban|ecodesign|greenwashing|de minimis|customs|duty|due diligence|EPR|r[ée]glementation|loi|directive|interdiction|douane|éco-conception)\b/i,
   "Macro & geopolitics" => /\b(tariffs?|trade war|inflation|consumer confidence|recession|currency|droits de douane)\b/i,
 }
+# Out of scope (not fashion) unless it is a collaboration with a fashion brand. Used without AI and to clean
+# articles sorted with older rules.
+OUT_OF_SCOPE = /\b(jewel\w*|joaill\w*|bijou\w*|watches|watchmak\w*|horlog\w*|montres?|beauty|beauté|cosm[eé]ti\w*|fragrances?|parfum\w*|perfumes?|skincare|make-?up|maquillage|spirits|wines?|hotels?|hôtel\w*)\b/i
+COLLAB = /\b(collab\w*|capsule|partnership|partenariat|teams up|x [A-Z])\b/i
+
+def out_of_scope?(text)
+  text =~ OUT_OF_SCOPE && text !~ COLLAB
+end
+
 FASHION = /(fashion|luxury|apparel|retail|brand|LVMH|Kering|Hermès|Chanel|Prada|Gucci|Inditex|Zara|H&M|Nike|Adidas|Richemont|Tapestry|mode|luxe|prêt-à-porter|habillement|textile|maroquinerie|sneaker|department store)/i
 
 # Media accepted from the brand & regulation searches (recognised business / fashion / news media).
@@ -350,6 +359,7 @@ def keyword_classify(a)
   cats = KEYWORDS.select { |_, rx| text =~ rx }.keys
   # without AI: stricter keyword rule (at least 2 business signals)
   watch = !!(text =~ WATCH_RX)
+  return { "keep" => false } if out_of_scope?(text)
   return { "keep" => false } if cats.empty? || !(cats.size >= 2 || watch) || !(TRADE.include?(a["source"]) || text =~ FASHION || watch)
   # capped at 3 so that AI-rated articles always rank first in the top 50
   { "keep" => true, "cat" => cats.first, "score" => 3, "angle" => "" }
@@ -518,6 +528,16 @@ def build(_days)
   puts "This update adds #{added.size} new articles."
   oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
   all = (frozen + previous + added).select { |e| e["day"] >= oldest }
+  # articles sorted with older rules (not yet re-sorted by the AI): drop jewellery, beauty, watches... now
+  all.reject! { |e| e["v"] != PROMPT_V && out_of_scope?("#{e['title']} #{e['original']}") }
+  # never twice the same article (same id or same headline)
+  seen = {}
+  all = all.sort_by { |e| e["v"] == PROMPT_V ? 0 : 1 }.select do |e| # keep the up-to-date version
+    k = e["title"].to_s.downcase.gsub(/[^[:alnum:]]/, "")[0, 80]
+    ok = !seen[e["id"]] && !seen[k]
+    seen[e["id"]] = seen[k] = true
+    ok
+  end
   # newest day first; inside a day, the most important first
   all = all.group_by { |e| e["day"] }.sort_by { |d, _| d }.reverse.flat_map { |_, es| es.sort_by { |e| rank(e) } }
   puts "Per day: " + all.group_by { |e| e["day"] }.map { |d, es| "#{d}: #{es.size}" }.join(", ")
