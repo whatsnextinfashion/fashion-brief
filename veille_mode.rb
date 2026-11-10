@@ -99,6 +99,8 @@ KEYWORDS = {
 OUT_OF_SCOPE = /\b(jewel\w*|joaill\w*|bijou\w*|watches|watchmak\w*|horlog\w*|montres?|beauty|beauté|cosm[eé]ti\w*|fragrances?|parfum\w*|perfumes?|skincare|make-?up|maquillage|spirits|wines?|hotels?|hôtel\w*)\b/i
 COLLAB = /\b(collab\w*|capsule|partnership|partenariat|teams up|x [A-Z])\b/i
 
+FASHION_WORDS = /\b(fashion|clothing|apparel|garments?|ready-to-wear|leather|maroquinerie|mode|habillement|vêtements?|textile|couture|footwear|shoes|chaussures|sneakers?|denim)\b/i
+
 def out_of_scope?(text)
   text =~ OUT_OF_SCOPE && text !~ COLLAB
 end
@@ -528,8 +530,11 @@ def build(_days)
   puts "This update adds #{added.size} new articles."
   oldest = (Time.now - (KEEP_DAYS - 1) * 86_400).strftime("%Y-%m-%d")
   all = (frozen + previous + added).select { |e| e["day"] >= oldest }
-  # articles sorted with older rules (not yet re-sorted by the AI): drop jewellery, beauty, watches... now
-  all.reject! { |e| e["v"] != PROMPT_V && out_of_scope?("#{e['title']} #{e['original']}") }
+  # safety net (also when the AI is too lenient): jewellery, beauty, watches... with no fashion word and no collab
+  all.reject! do |e|
+    t = "#{e['title']} #{e['original']}"
+    out_of_scope?(t) && (e["v"] != PROMPT_V || t !~ FASHION_WORDS)
+  end
   # never twice the same article (same id or same headline)
   seen = {}
   all = all.sort_by { |e| e["v"] == PROMPT_V ? 0 : 1 }.select do |e| # keep the up-to-date version
