@@ -70,6 +70,26 @@ SOURCES = [
   ["Financial Times", "https://www.ft.com/retail-consumer?format=rss"],
   ["Financial Times", "https://www.ft.com/luxury-goods?format=rss"],
   ["Bloomberg",       gnews("site:bloomberg.com (luxury OR fashion OR apparel OR retail OR consumer) when:2d")],
+  # ─── Other fashion-business media (official RSS feeds when they exist, otherwise Google News) ───
+  ["Business of Fashion", gnews("site:businessoffashion.com when:2d")],
+  ["Glossy",              "https://www.glossy.co/feed/"],
+  ["Modern Retail",       "https://www.modernretail.co/feed/"],
+  ["Retail Dive",         "https://www.retaildive.com/feeds/news/"],
+  ["Luxury Daily",        "https://www.luxurydaily.com/feed/"],
+  ["Footwear News",       "https://footwearnews.com/feed/"],
+  ["Sourcing Journal",    gnews("site:sourcingjournal.com when:2d")],
+  ["Just Style",          "https://www.just-style.com/feed/"],
+  ["The Industry",        "https://www.theindustry.fashion/feed/"],
+  ["Retail Gazette",      "https://www.retailgazette.co.uk/feed/"],
+  ["Retail Week",         gnews("site:retail-week.com when:2d")],
+  ["The Fashion Law",     gnews("site:thefashionlaw.com when:2d")],
+  ["Hypebeast",           "https://hypebeast.com/feed"],
+  ["Highsnobiety",        "https://www.highsnobiety.com/feed/"],
+  ["Inside Retail Asia",  "https://insideretail.asia/feed/"],
+  ["Pambianco",           "https://www.pambianconews.com/feed/"],
+  ["MF Fashion",          gnews("site:mffashion.com when:2d")],
+  ["Journal du Textile",  "https://www.journaldutextile.com/feed/"],
+  ["Le Figaro",           gnews("site:lefigaro.fr (mode OR luxe OR habillement OR \"prêt-à-porter\" OR maroquinerie) when:2d", "fr")],
 ]
 
 CATEGORIES = ["Earnings & P&L", "Collaborations", "Store openings & retail", "M&A & investment",
@@ -84,7 +104,10 @@ ZONE_RX = {
 }
 
 TRADE = ["WWD", "Drapers", "FashionUnited", "FashionNetwork", "Vogue Business", "Jing Daily",
-         "Journal du Luxe", "The Good Goods", "The Bold Way"]
+         "Journal du Luxe", "The Good Goods", "The Bold Way", "Business of Fashion", "Glossy", "Modern Retail",
+         "Luxury Daily", "Footwear News", "Sourcing Journal", "Just Style", "The Industry", "Retail Gazette",
+         "Retail Week", "The Fashion Law", "Hypebeast", "Highsnobiety", "Inside Retail Asia", "Pambianco",
+         "MF Fashion", "Journal du Textile"]
 KEYWORDS = {
   "Earnings & P&L" => /\b(sales|revenue|profit|earnings|results|quarter|margin|guidance|chiffre d'affaires|résultats|bénéfice|ventes|trimestre|marge)\b/i,
   "Collaborations" => /\b(collab\w*|partnership|capsule|teams up|partenariat)\b/i,
@@ -96,7 +119,7 @@ KEYWORDS = {
 }
 # Out of scope (not fashion) unless it is a collaboration with a fashion brand. Used without AI and to clean
 # articles sorted with older rules.
-OUT_OF_SCOPE = /\b(jewel\w*|joaill\w*|bijou\w*|watches|watchmak\w*|horlog\w*|montres?|beauty|beauté|cosm[eé]ti\w*|fragrances?|parfum\w*|perfumes?|skincare|make-?up|maquillage|spirits|wines?|hotels?|hôtel\w*)\b/i
+OUT_OF_SCOPE = /\b(jewel\w*|joaill\w*|bijou\w*|watches|watchmak\w*|horlog\w*|montres?|beauty|beauté|cosm[eé]ti\w*|fragrances?|parfum\w*|perfumes?|skincare|make-?up|maquillage|spirits|wines?|hotels?|hôtel\w*|Pandora|Swarovski|Tiffany|Cartier|Bulgari|Bvlgari|Van Cleef|Boucheron|Chaumet|Rolex|Omega|Swatch|Breitling|Patek|L'Or[ée]al|Est[ée]e Lauder|Coty|Sephora|Ulta|Shiseido|Progold)\b/i
 COLLAB = /\b(collab\w*|capsule|partnership|partenariat|teams up|x [A-Z])\b/i
 
 FASHION_WORDS = /\b(fashion|clothing|apparel|garments?|ready-to-wear|leather|maroquinerie|mode|habillement|vêtements?|textile|couture|footwear|shoes|chaussures|sneakers?|denim)\b/i
@@ -108,7 +131,7 @@ end
 FASHION = /(fashion|luxury|apparel|retail|brand|LVMH|Kering|Hermès|Chanel|Prada|Gucci|Inditex|Zara|H&M|Nike|Adidas|Richemont|Tapestry|mode|luxe|prêt-à-porter|habillement|textile|maroquinerie|sneaker|department store)/i
 
 # Media accepted from the brand & regulation searches (recognised business / fashion / news media).
-TRUSTED = /\A(WWD|Vogue Business|Vogue|Business of Fashion|The Business of Fashion|FashionNetwork|FashionUnited|Drapers|Jing Daily|Journal du Luxe|Les Échos|Financial Times|Bloomberg|WSJ|Reuters|AFP|Associated Press|AP News|CNBC|Forbes|Fortune|Business Insider|Insider|The New York Times|New York Times|Washington Post|The Guardian|The Times|The Telegraph|Evening Standard|BBC|The Economist|Harper's BAZAAR|Harper's Bazaar|ELLE|Elle|Grazia|L'Officiel|Hypebeast|Highsnobiety|Glossy|Modern Retail|Retail Dive|Retail Gazette|Retail Week|Luxury Daily|Le Monde|Le Figaro|Madame Figaro|Le Parisien|Libération|L'Express|Le Point|Challenges|Capital|BFM|BFMTV|La Tribune|L'Opinion|Les Echos Week-End|Il Sole 24 Ore|Corriere della Sera|MF Fashion|Pambianco|Handelsblatt|Süddeutsche Zeitung|El País|Expansión|South China Morning Post|SCMP|Nikkei Asia|Nikkei|Caixin|Hindustan Times|The Times of India|Times of India|The Economic Times|Economic Times|Mint|Livemint|Business Standard|The Hindu|Vogue India|Arabian Business|The National|Gulf News|Yahoo Finance|MarketWatch|Barron's|Axios|Semafor|Politico|Euronews|Fashion Dive)\z/i
+TRUSTED = /\A(WWD|Vogue Business|Vogue|Business of Fashion|The Business of Fashion|FashionNetwork|FashionUnited|Drapers|Jing Daily|Journal du Luxe|Les Échos|Financial Times|Bloomberg|WSJ|Reuters|AFP|Associated Press|AP News|CNBC|Forbes|Fortune|Business Insider|Insider|The New York Times|New York Times|Washington Post|The Guardian|The Times|The Telegraph|Evening Standard|BBC|The Economist|Harper's BAZAAR|Harper's Bazaar|ELLE|Elle|Grazia|L'Officiel|Hypebeast|Highsnobiety|Glossy|Modern Retail|Retail Dive|Retail Gazette|Retail Week|Luxury Daily|Le Monde|Le Figaro|Madame Figaro|Le Parisien|Libération|L'Express|Le Point|Challenges|Capital|BFM|BFMTV|La Tribune|L'Opinion|Les Echos Week-End|Il Sole 24 Ore|Corriere della Sera|MF Fashion|Pambianco|Handelsblatt|Süddeutsche Zeitung|El País|Expansión|South China Morning Post|SCMP|Nikkei Asia|Nikkei|Caixin|Hindustan Times|The Times of India|Times of India|The Economic Times|Economic Times|Mint|Livemint|Business Standard|The Hindu|Vogue India|Arabian Business|The National|Gulf News|Yahoo Finance|MarketWatch|Barron's|Axios|Semafor|Politico|Euronews|Fashion Dive|Footwear News|Sourcing Journal|Just Style|Just-Style|The Industry|Retail Week|The Fashion Law|Inside Retail Asia|Inside Retail|Pambianco|Pambianconews|Journal du Textile|Retail Dive|Luxury Daily)\z/i
 
 def normalize_source(s)
   s = s.to_s.strip
